@@ -77,12 +77,21 @@ function main() {
     try {
         var assetsComp = findPrecompByName("Assets 1");
         replaceAlbumArt(assetsComp, imageItem);
-        alert("✅ Album art replaced inside Assets 1");
+        alert(" Album art replaced inside Assets 1");
     } catch (e) {
-        alert("⚠️ Album art replacement skipped: " + e.toString());
+        alert(" Album art replacement skipped: " + e.toString());
     }
+    // ------------------ Phase 4: Render Queue ------------------
+    try {
+        var outputComp = findCompByName("OUTPUT 1"); // or change target if you want to render another comp
+        var renderPath = addToRenderQueue(outputComp, job.job_folder || job.audio_trimmed, job.job_id);
+    if (renderPath) alert(" Added to Render Queue:\n" + renderPath);
+    } catch (e) {
+        alert(" Render Queue step skipped: " + e.toString());
+    }
+
     app.endUndoGroup();
-    alert("✅ Build complete for Job " + job.job_id + " with lyrics + markers!");
+    alert(" Build complete for Job " + job.job_id + " with lyrics + markers!");
     }
     
 // -------------------------------------------------------
@@ -250,6 +259,45 @@ function replaceAlbumArt(assetComp, newImageItem) {
         }
     }
     alert("No image layer found in " + assetComp.name);
+}
+// -------------------------------------------------------
+// --- Phase 4 helpers: Render Queue automation -----------
+// -------------------------------------------------------
+
+function addToRenderQueue(comp, jobFolder, jobId) {
+    if (!comp) {
+        alert("No comp provided to render.");
+        return null;
+    }
+
+    // Ensure /renders directory exists next to the job folder
+    var projectFolder = new Folder(jobFolder).parent;
+    var renderFolder = new Folder(projectFolder.fsName + "/renders");
+    if (!renderFolder.exists) renderFolder.create();
+
+    // Build output path
+    var outputPath = renderFolder.fsName + "/job_" + ("00" + jobId).slice(-3) + ".mp4";
+    var outputFile = new File(outputPath);
+
+    // Add to Render Queue
+    var rqItem = app.project.renderQueue.items.add(comp);
+
+    // Apply render and output templates (must exist in AE)
+    try {
+        rqItem.applyTemplate("Best Settings");
+    } catch (e) {
+        alert(" Could not apply 'Best Settings' template — using defaults.");
+    }
+    try {
+        rqItem.outputModule(1).applyTemplate("H.264");
+    } catch (e) {
+        alert(" Could not apply 'H.264' template — using defaults.");
+    }
+
+    // Set destination
+    rqItem.outputModule(1).file = outputFile;
+
+    return outputPath;
 }
 
 
