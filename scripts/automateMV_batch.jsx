@@ -91,11 +91,10 @@ function main() {
         moveItemToFolder(newComp, "OUTPUT" + jobData.job_id);
 
         // Relink existing imported assets instead of replacing
-        relinkFootageByName("AUDIO", jobData.audio_trimmed);
-        relinkFootageByName("COVER", jobData.cover_image);
+        relinkFootageInsideOutputFolder(jobData.job_id, jobData.audio_trimmed, jobData.cover_image);
 
-        autoResizeCoverLayer(newComp);
-        setWorkAreaToAudioDuration(jobData.job_id, jobData.audio_trimmed);
+        autoResizeCoverInOutput(jobData.job_id);
+        setWorkAreaToAudioDuration(jobData.job_id);
         updateSongTitle(jobData.job_id, jobData.song_title);
 
 
@@ -520,70 +519,109 @@ function relinkFootageByName(itemName, newFilePath) {
 }
 
 // Auto-resize any COVER layer to fit comp safely (preserves aspect)
-function autoResizeCoverLayer(comp) {
+function autoResizeCoverInOutput(jobId) {
+    var comp = null;
+    try { comp = findCompByName("OUTPUT " + jobId); } catch (_) {}
+    if (!comp) return;
+
+    // Find any layer named COVER, or whose source is named COVER
     for (var i = 1; i <= comp.numLayers; i++) {
         var lyr = comp.layer(i);
-        if (lyr.name && lyr.name.toUpperCase().indexOf("COVER") !== -1) {
-            var cw = comp.width, ch = comp.height;
-            var lw = lyr.source.width, lh = lyr.source.height;
-            if (lw && lh) {
-                var scale = 100 * Math.min(cw / lw, ch / lh);
-                lyr.property("Scale").setValue([scale, scale]);
-                $.writeln(" Auto-resized COVER layer in " + comp.name);
-            }
-        }
+        if (!(lyr instanceof AVLayer)) continue;
+
+        var isCover = (lyr.name && lyr.name.toUpperCase() === "COVER") ||
+                      (lyr.source && lyr.source.name && lyr.source.name.toUpperCase() === "COVER");
+        if (!isCover) continue;
+
+        var cw = comp.width, ch = comp.height;
+        var lw = lyr.source && lyr.source.width, lh = lyr.source && lyr.source.height;
+        if (!lw || !lh) continue;
+
+        var scale = 100 * Math.min(cw / lw, ch / lh);
+        try { lyr.property("Scale").setValue([scale, scale]); } catch (_) {}
+        $.writeln(" Auto-resized COVER in " + comp.name);
     }
 }
 
-
-// If your Assets comp uses some other PNG/JPG layers, point them to the COVER footage item.
 function retargetImageLayersToFootage(assetComp, footageName) {
     if (!assetComp) return;
+
     var coverFootage = null;
     for (var i = 1; i <= app.project.numItems; i++) {
         var it = app.project.item(i);
         if (it instanceof FootageItem && it.name.toUpperCase() === footageName.toUpperCase()) {
-            coverFootage = it; break;
+            coverFootage = it;
+            break;
         }
     }
-    if (!coverFootage) { $.writeln(" Footage '" + footageName + "' not found."); return; }
+
+    if (!coverFootage) {
+        $.writeln("⚠️ Footage '" + footageName + "' not found.");
+        return;
+    }
 
     for (var L = 1; L <= assetComp.numLayers; L++) {
         var lyr = assetComp.layer(L);
-        if (lyr instanceof AVLayer && lyr.source instanceof FootageItem) {
-            var n = (lyr.source.name || "").toLowerCase();
-            // only retarget obvious raster assets (png/jpg/jpeg)
-            if (/\.(png|jpg|jpeg)$/i.test(n)) {
-                try {
-                    lyr.replaceSource(coverFootage, false); // keep layer props, use COVER footage
-                    $.writeln(" Retargeted '" + lyr.name + "' to COVER footage in " + assetComp.name);
-                } catch (e) {
-                    $.writeln(" Could not retarget '" + lyr.name + "': " + e.toString());
-                }
-            }
-        }
-    }
-}
-// Set comp work area to audio duration
-function setWorkAreaToAudioDuration(jobId, audioPath) {
-    try {
-        var comp = findCompByName("LYRIC FONT " + jobId);
-        if (!comp) return;
-        var audioFile = new File(audioPath);
-        var tmp = app.project.importFile(new ImportOptions(audioFile));
-        var duration = tmp.duration;
-        tmp.remove(); // clean up temp import
+        if (!(lyr instanceof AVLayer)) continue;
+        if (!(lyr.source instanceof FootageItem)) continue;
 
-        if (duration && duration > 0) {
-            comp.workAreaStart = 0;
-            comp.workAreaDuration = duration;
-            comp.duration = duration;
-            $.writeln(" Set work area for LYRIC FONT " + jobId + " to " + duration.toFixed(2) + "s");
+        var srcName = (lyr.source.name || "").toLowerCase();
+        var lyrName = (lyr.name || "").toLowerCase();
+
+        // only target layers clearly meant to be the album art
+        var isCoverLayer =
+            lyrName === "cover" ||
+            lyrName.indexOf("album") !== -1 ||
+            lyrName.indexOf("art") !== -1 ||
+            srcName === "cover" ||
+            srcName.indexOf("album") !== -1;
+
+        if (!isCoverLayer) continue;
+
+        try {
+            lyr.replaceSource(coverFootage, false); // keep transform, effects, etc.
+            $.writeln("🖼️ Replaced album art layer '" + lyr.name + "' with COVER footage in " + assetComp.name);
+        } catch (e) {
+            $.writeln("⚠️ Could not replace '" + lyr.name + "': " + e.toString());
         }
-    } catch (e) {
-        $.writeln(" Could not set work area for job " + jobId + ": " + e.toString());
     }
 }
+
+// Set comp work area to audio duration
+function setWorkAreaToAudioDuration(jobId) {
+    var comp = null;
+    try { comp = findCompByName("LYRIC FONT " + jobId); } catch (_) {}
+    if (!comp) return;
+
+    // Look for the AUDIO footage used in this job’s Assets folder
+    var outputFolder = findFolderByName("OUTPUT" + jobId);
+    if (!outputFolder) return;
+
+    var assetsFolder = null;
+    for (var i = 1; i <= outputFolder.numItems; i++) {
+        var it = outputFolder.item(i);
+        if (it instanceof FolderItem && it.name.toUpperCase().indexOf("ASSETS OT") === 0) {
+            assetsFolder = it; break;
+        }
+    }
+    if (!assetsFolder) return;
+
+    var audioFootage = null;
+    for (var i = 1; i <= assetsFolder.numItems; i++) {
+        var it = assetsFolder.item(i);
+        if (it instanceof FootageItem && (it.name || "").toUpperCase() === "AUDIO") {
+            audioFootage = it; break;
+        }
+    }
+    if (!audioFootage || !audioFootage.duration) return;
+
+    var dur = audioFootage.duration;
+    comp.workAreaStart = 0;
+    comp.workAreaDuration = dur;
+    comp.duration = Math.max(comp.duration, dur);
+    $.writeln(" Set work area for LYRIC FONT " + jobId + " to " + dur.toFixed(2) + "s");
+}
+
 
 // Update title text inside Assets comp
 function updateSongTitle(jobId, titleText) {
@@ -607,6 +645,53 @@ function updateSongTitle(jobId, titleText) {
         }
     } catch (e) {
         $.writeln(" Could not update title for job " + jobId + ": " + e.toString());
+    }
+}
+function relinkFootageInsideOutputFolder(jobId, audioPath, coverPath) {
+    var outputFolder = findFolderByName("OUTPUT" + jobId);
+    if (!outputFolder) {
+        $.writeln("⚠️ OUTPUT" + jobId + " folder not found.");
+        return;
+    }
+
+    // Find the nested "Assets OTX" folder inside
+    var assetsFolder = null;
+    for (var i = 1; i <= outputFolder.numItems; i++) {
+        var it = outputFolder.item(i);
+        if (it instanceof FolderItem && it.name.toUpperCase().indexOf("ASSETS OT") === 0) {
+            assetsFolder = it;
+            break;
+        }
+    }
+
+    if (!assetsFolder) {
+        $.writeln("⚠️ Assets folder not found inside OUTPUT" + jobId);
+        return;
+    }
+
+    var audioFile = new File(audioPath);
+    var coverFile = new File(coverPath);
+    if (!audioFile.exists || !coverFile.exists) {
+        $.writeln("⚠️ Missing audio or cover file for job " + jobId);
+        return;
+    }
+
+    for (var i = 1; i <= assetsFolder.numItems; i++) {
+        var it = assetsFolder.item(i);
+        if (!(it instanceof FootageItem)) continue;
+
+        var name = (it.name || "").toUpperCase();
+        try {
+            if (name === "AUDIO") {
+                it.replace(audioFile);
+                $.writeln("🎧 Replaced AUDIO inside Assets OT" + jobId);
+            } else if (name === "COVER") {
+                it.replace(coverFile);
+                $.writeln("🖼️ Replaced COVER inside Assets OT" + jobId);
+            }
+        } catch (e) {
+            $.writeln("⚠️ Could not relink " + it.name + ": " + e.toString());
+        }
     }
 }
 
