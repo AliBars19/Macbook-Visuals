@@ -210,7 +210,14 @@ def detect_beats(job_folder):
     beat_times = librosa.frames_to_time(beat_frames, sr=sr)
     
     beats_list = [float(t) for t in beat_times]
-    print(f"  Detected {len(beats_list)} beats (tempo ≈ {tempo:.1f} BPM).")
+
+    try:
+        tempo_val = float(tempo)
+    except:
+        tempo_val = float(tempo[0]) if hasattr(tempo, "__len__") else 0.0
+
+    print(f"  Detected {len(beats_list)} beats (tempo ≈ {tempo_val:.1f} BPM).")
+
 
     return beats_list
 
@@ -251,8 +258,6 @@ def batch_generate_jobs():
             clipped_path = os.path.join(job_folder, "audio_trimmed.wav")
             print(f"✓ Audio already trimmed for job {job_id:03}")
 
-
-
         beats_path = os.path.join(job_folder, "beats.json")
         if not stages["beats_generated"]:
             beats = detect_beats(job_folder)
@@ -262,8 +267,6 @@ def batch_generate_jobs():
             with open(beats_path, "r", encoding="utf-8") as f:
                 beats = json.load(f)
             print(f"✓ Beats already detected for job {job_id:03}")
-
-        
 
         #Lyrics
         if not stages["lyrics_transcribed"]:
