@@ -365,7 +365,9 @@ function parseLyricsFile(p) {
     for (var i = 0; i < data.length; i++) {
         if (data[i].lyric_current) {
             data[i].lyric_current =
-                data[i].lyric_current.split("\\n").join("\n");
+                data[i].lyric_current
+                    .split("MVAE").join("\\r")   // ← converts the placeholder to line break
+                    .split("\\n").join("\\n");   // ← handles literal \n too
         }
     }
 
