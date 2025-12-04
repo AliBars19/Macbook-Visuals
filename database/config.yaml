@@ -1,7 +1,24 @@
 channels:
   - "macbookvisuals"
+  - "yung.iam"
+  - "rivan21332"
+  - "heygaree"
+  - "mr.ego42"
+  - "0ne966"
+  - ".kingarienda"
+  - "notricwrz"
+  - "spotifylyrics446"
+  - "nelsonamaraal"
+  - "mkmusic216"
+  - "teehayyz"
+  - "weluvskb23"
+  - "sirrr.r"
+
 
 db_path : database/tiktok-sound.json
+
+spotify_client_id: "enter-here"
+spotify_client_secret: "enter-here"
 
 genres : 
   hip_hop: ["hip_hop","rap","trap","hip hop"]
