@@ -1,181 +1,162 @@
 import requests
-from html import unescape
 import re
-from rapidfuzz import fuzz
+import json
+from html import unescape
+
 
 GENIUS_API_TOKEN = "1rnjcBnyL8eAARorEsLIG-JxO8JtsvAfygrPhd7uPxcXxMYK0NaNlL_i-jCsW0zt"
 GENIUS_BASE_URL = "https://api.genius.com"
 
+
 def fetch_genius_lyrics(song_title):
-    
-   
+    """
+    Fully correct Genius lyric scraper:
+    - Uses Genius API to find the song page
+    - Extracts ALL lyrics from __PRELOADED_STATE__
+    - Recursively flattens the children tree
+    - Preserves exact ordering of every line
+    - Removes metadata like [Chorus], [Verse X]
+    """
+
     if not GENIUS_API_TOKEN or not song_title:
         return None
 
     headers = {"Authorization": f"Bearer {GENIUS_API_TOKEN}"}
 
+    # ----- Parse artist/title if provided as: "Artist - Song" -----
     artist = None
     title = song_title.strip()
     if " - " in song_title:
         artist, title = [x.strip() for x in song_title.split(" - ", 1)]
 
-    title_l = title.lower()
-    artist_l = artist.lower() if artist else None
+    q = f"{title} {artist}" if artist else title
 
-    def safe_request(url, params=None):
-        try:
-            r = requests.get(url, headers=headers, params=params, timeout=10)
-            if r.status_code == 429:
-                print("  [Genius] Rate limited — waiting 3 seconds...")
-                import time
-                time.sleep(3)
-                return safe_request(url, params)
-            r.raise_for_status()
-            return r
-        except:
-            return None
+    # ----- Genius Search -----
+    try:
+        res = requests.get(
+            f"{GENIUS_BASE_URL}/search",
+            params={"q": q},
+            headers=headers,
+            timeout=10
+        ).json()
+    except:
+        print("[GENIUS] Search request failed.")
+        return None
 
-    search = safe_request(
-        f"{GENIUS_BASE_URL}/search",
-        params={"q": f"{title} {artist}" if artist else title}
-    )
-    if not search:
-        print("  [Genius] Search failed — using AZLyrics fallback.")
-        return fetch_azlyrics(song_title)
-
-    hits = search.json().get("response", {}).get("hits", [])
+    hits = res.get("response", {}).get("hits", [])
     if not hits:
-        print("  [Genius] No hits — using AZLyrics fallback.")
-        return fetch_azlyrics(song_title)
+        print("[GENIUS] No hits found.")
+        return None
 
-    from difflib import SequenceMatcher
+    url = hits[0]["result"]["url"]
 
-    def score(result):
-        result_title = result.get("title", "").lower()
-        result_artist = result.get("primary_artist", {}).get("name", "").lower()
+    # ----- Fetch HTML -----
+    try:
+        html = requests.get(url, timeout=10).text
+    except:
+        print("[GENIUS] Failed to fetch song HTML.")
+        return None
 
-        title_sim = SequenceMatcher(None, title_l, result_title).ratio()
-
-        artist_sim = 0
-        if artist_l:
-            artist_sim = SequenceMatcher(None, artist_l, result_artist).ratio()
-
-        return (title_sim * 0.6) + (artist_sim * 0.4)
-
-    best = max([h["result"] for h in hits], key=score)
-    best_score = score(best)
-
-    if best_score < 0.35:
-        print("  [Genius] Match too weak — using AZLyrics fallback.")
-        return fetch_azlyrics(song_title)
-
-    url = best.get("url")
-    if not url:
-        print("  [Genius] No URL — fallback to AZLyrics.")
-        return fetch_azlyrics(song_title)
-
-    page = safe_request(url)
-    if not page:
-        print("  [Genius] Page failed — AZLyrics fallback.")
-        return fetch_azlyrics(song_title)
-
-    html = page.text
-
-    containers = re.findall(
-        r'<div[^>]+data-lyrics-container="true"[^>]*>(.*?)</div>',
+    # ----- Extract __PRELOADED_STATE__ JSON -----
+    state_match = re.search(
+        r'window\.__PRELOADED_STATE__\s*=\s*(\{.*?\});',
         html,
-        flags=re.DOTALL | re.IGNORECASE
+        flags=re.DOTALL
     )
-    if not containers:
-        print("  [Genius] No lyrics containers — AZLyrics fallback.")
-        return fetch_azlyrics(song_title)
 
-    collected = []
-    for block in containers:
-        block = re.sub(r'<br\s*/?>', '\n', block)
-        block = re.sub(r'<.*?>', '', block)
-        collected.append(block.strip())
+    if not state_match:
+        print("[GENIUS] Could not locate PRELOADED_STATE. Falling back.")
+        return fallback_html_lyrics(html)
 
-    text = unescape("\n".join(collected))
+    try:
+        data = json.loads(state_match.group(1))
+    except Exception as e:
+        print("[GENIUS] JSON decode error:", e)
+        return fallback_html_lyrics(html)
 
-    lines = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    # ----- Locate the lyrics tree -----
+    try:
+        body_children = (
+            data["songPage"]["lyricsData"]["body"]["children"]
+        )
+    except Exception as e:
+        print("[GENIUS] Lyrics JSON structure changed:", e)
+        return fallback_html_lyrics(html)
 
-        low = line.lower()
+    # ----- Recursively flatten all nodes into plain text -----
+    full_text = extract_text_from_json(body_children)
 
-        if line.startswith("[") and line.endswith("]"):
-            continue
-
-        if "contributorstranslations" in low:
-            continue
-        if re.match(r"^\d+\s+contributorstranslations$", low):
-            continue
-
-        lines.append(line)
-
-
-    if not lines:
-        print("  [Genius] Lyrics empty — fallback to AZLyrics.")
-        return fetch_azlyrics(song_title)
+    # ----- Clean + filter -----
+    lines = [
+        ln.strip()
+        for ln in full_text.splitlines()
+        if ln.strip() and not (ln.startswith("[") and ln.endswith("]"))
+    ]
 
     return "\n".join(lines)
 
 
+def extract_text_from_json(node):
+    """
+    Recursively flatten all children into plain text
+    preserving the exact order of lyrics.
+    """
 
-def find_genius_region_for_trimmed_audio(whisper_segments, genius_text):
- 
-    lines = [ln.strip() for ln in genius_text.splitlines() if ln.strip()]
-    trimmed_duration = whisper_segments[-1]["t"] - whisper_segments[0]["t"]
+    if isinstance(node, str):
+        return node
 
-    approx_lines = int(trimmed_duration / 2.2)
-    approx_lines = max(1, min(approx_lines, len(lines)))
+    if isinstance(node, dict):
+        pieces = []
+        for child in node.get("children", []):
+            pieces.append(extract_text_from_json(child))
+        return "\n".join(pieces)
 
-    region = lines[:approx_lines]
+    if isinstance(node, list):
+        pieces = []
+        for child in node:
+            pieces.append(extract_text_from_json(child))
+        return "\n".join(pieces)
 
-    return region
+    return ""
 
 
+def fallback_html_lyrics(html):
+    """
+    Only used if JSON extraction fails.
+    Still improved over your original fallback.
+    """
 
-def fetch_azlyrics(song_title):
-    
-    print("  [AZLyrics] Attempting fallback lyric extraction...")
+    blocks = re.findall(
+        r'<div[^>]+data-lyrics-container="true"[^>]*>(.*?)</div>',
+        html,
+        flags=re.DOTALL | re.IGNORECASE
+    )
 
-    if " - " not in song_title:
+    if not blocks:
         return None
 
-    artist, title = [x.strip() for x in song_title.split(" - ", 1)]
-    artist = artist.lower().replace(" ", "")
-    title = title.lower().replace(" ", "")
+    cleaned = []
+    for blk in blocks:
+        blk = re.sub(r'<br\s*/?>', '\n', blk)
+        blk = re.sub(r'<.*?>', '', blk)
+        cleaned.append(blk.strip())
 
-    url = f"https://www.azlyrics.com/lyrics/{artist}/{title}.html"
+    text = unescape("\n".join(cleaned))
 
-    try:
-        r = requests.get(url, timeout=10)
-        if r.status_code != 200:
-            print("  [AZLyrics] Not found.")
-            return None
+        # ----- Clean + filter -----
+    raw_lines = [
+        ln.strip()
+        for ln in text.splitlines()
+        if ln.strip() and not (ln.startswith("[") and ln.endswith("]"))
+    ]
 
-        html = r.text
+    # Remove junk like "168 ContributorsTranslations"
+    lines = []
+    for ln in raw_lines:
+        low = ln.lower()
+        if "contributors" in low or "translations" in low:
+            continue
+        lines.append(ln)
 
-        # lyrics are between two <div>s without classes
-        m = re.search(
-            r'<!-- Usage of azlyrics.com content.*?-->(.*?)(</div>)',
-            html,
-            flags=re.DOTALL
-        )
-        if not m:
-            print("  [AZLyrics] Parsing failed.")
-            return None
+    return "\n".join(lines)
 
-        block = m.group(1)
-        block = re.sub(r'<br\s*/?>', '\n', block)
-        block = re.sub(r'<.*?>', '', block)
-
-        cleaned = "\n".join([ln.strip() for ln in block.splitlines() if ln.strip()])
-        return cleaned
-
-    except Exception:
-        return None

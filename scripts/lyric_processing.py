@@ -8,33 +8,55 @@ from scripts.genius_processing import fetch_genius_lyrics
 
 def extract_genius_section(whisper_segments, genius_text):
 
-    # full whisper text
-    whisper_text = " ".join([seg["lyric_current"] for seg in whisper_segments])
-    whisper_text_clean = re.sub(r"[^a-zA-Z0-9 ]+", " ", whisper_text).lower()
 
-    genius_lines = [ln.strip() for ln in genius_text.splitlines() if ln.strip()]
-    genius_clean = [re.sub(r"[^a-zA-Z0-9 ]+", " ", ln).lower() for ln in genius_lines]
+    genius_lines = [
+        ln.strip() for ln in genius_text.splitlines()
+        if ln.strip() and not (ln.startswith("[") and ln.endswith("]"))
+    ]
 
-    best_score = -1
-    best_start = 0
-    best_end = 0
+    if len(genius_lines) == 0:
+        return []
 
-    # try windows from 3 to 20 lines
-    for start in range(len(genius_clean)):
-        buf = ""
-        for end in range(start, min(start + 20, len(genius_clean))):
-            buf = (buf + " " + genius_clean[end]).strip()
-            score = fuzz.partial_ratio(whisper_text_clean, buf)
+    genius_clean = [
+        re.sub(r"[^a-zA-Z0-9 ]+", " ", ln).lower()
+        for ln in genius_lines
+    ]
+
+    whisper_clean = [
+        re.sub(r"[^a-zA-Z0-9 ]+", " ", seg["lyric_current"]).lower()
+        for seg in whisper_segments
+    ]
+
+    aligned = []
+    last_idx = 0
+
+    MIN_SCORE = 65
+
+    for w in whisper_clean:
+        if last_idx >= len(genius_clean):
+            break
+
+        best_score = -1
+        best_j = last_idx
+
+        for j in range(last_idx, len(genius_clean)):
+            score = fuzz.partial_ratio(w, genius_clean[j])
 
             if score > best_score:
                 best_score = score
-                best_start = start
-                best_end = end
+                best_j = j
 
-    print(f"[SECTION] Best matching block: lines {best_start}–{best_end}, score={best_score}")
+            if best_score >= 90:
+                break
 
-    # return EXACT subsection
-    return genius_lines[best_start:best_end + 1]
+        if best_score < MIN_SCORE:
+            break
+
+        aligned.append(genius_lines[best_j])
+        last_idx = best_j + 1 
+    return aligned
+
+
 
 
 def wrap_two_lines(text, max_chars=25):
@@ -73,11 +95,23 @@ def transcribe_audio(job_folder, song_title=None):
     )
     result = model.transcribe(
         audio_path,
-        vad=True,
-        regroup=False,
-        suppress_silence=True,
+        vad=True,                 
+        suppress_silence=False,   
+        regroup=True,             
         temperature=0,
     )
+
+    if not result.segments:
+        print("Whisper returned empty output — retrying with fallback params...")
+
+        result = model.transcribe(
+            audio_path,
+            vad=False,
+            suppress_silence=False,
+            regroup=True,
+            temperature=0.5,       
+        )
+
 
     segments = result.segments
     final_list = [{
@@ -88,7 +122,6 @@ def transcribe_audio(job_folder, song_title=None):
         "lyric_next2": ""
     } for seg in segments]
 
-    # --- Fetch Genius ---
     genius_text = None
     if song_title:
         print("Fetching Genius lyrics...")
@@ -96,31 +129,35 @@ def transcribe_audio(job_folder, song_title=None):
         if genius_text:
             open(os.path.join(job_folder, "genius_lyrics.txt"), "w", encoding="utf-8").write(genius_text)
 
-    # --- Region selection ---
     if genius_text:
-        genius_section = extract_genius_section(final_list, genius_text)
-        # Now replace whisper text with EXACT genius lines
-        for i, line in enumerate(genius_section):
-            if i < len(final_list):
-                final_list[i]["lyric_current"] = line
-        
+        print("Aligning Genius lyrics to Whisper timestamps...")
+        aligned = extract_genius_section(final_list, genius_text)
 
-    # --- AE soft wrap with literal "\r" ---
+        for i in range(min(len(final_list), len(aligned))):
+            final_list[i]["lyric_current"] = aligned[i]
+
+        
     def wrap_chunk(text, limit=25):
-        words = text.split()
-        out = []
-        buf = ""
-        for w in words:
-            candidate = (buf + " " + w).strip()
-            if len(candidate) > limit:
-                if buf:
-                    out.append(buf.strip())
-                buf = w
-            else:
-                buf = candidate
-        if buf:
-            out.append(buf.strip())
-        return " \\r ".join(out)
+        text = text.strip()
+
+        # If text already contains \r, do NOT wrap again
+        if "\\r" in text:
+            return text
+
+        if len(text) <= limit:
+            return text
+
+        # Find a space near the limit to split once
+        cut = text.rfind(" ", 0, limit)
+        if cut == -1:
+            cut = limit
+
+        first = text[:cut].strip()
+        rest  = text[cut:].strip()
+
+        return f"{first} \\r {rest}"
+
+
 
     for seg in final_list:
         seg["lyric_current"] = wrap_chunk(seg["lyric_current"], 25)
@@ -148,7 +185,6 @@ def align_genius_to_whisper(whisper_segments, genius_lines):
     if g == 0:
         return whisper_segments
 
-    # ---- CASE A: More Genius lines → merge into fewer segments ----
     if g > w:
         remaining_g = g
         idx = 0
@@ -168,7 +204,6 @@ def align_genius_to_whisper(whisper_segments, genius_lines):
 
         return whisper_segments
 
-    # ---- CASE B: Fewer or equal Genius lines → assign 1-to-1 ----
     for i, line in enumerate(genius_lines):
         whisper_segments[i]["lyric_current"] = line
 
