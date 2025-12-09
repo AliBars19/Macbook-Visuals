@@ -13,7 +13,6 @@ from scripts.image_processing import (
     image_extraction
 )
 
-
 GENIUS_API_TOKEN = "1rnjcBnyL8eAARorEsLIG-JxO8JtsvAfygrPhd7uPxcXxMYK0NaNlL_i-jCsW0zt"
 GENIUS_BASE_URL = "https://api.genius.com"
 

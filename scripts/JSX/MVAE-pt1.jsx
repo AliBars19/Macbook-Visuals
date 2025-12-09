@@ -372,7 +372,7 @@ function parseLyricsFile(p) {
 
     for (var i = 0; i < data.length; i++) {
         if (data[i].lyric_current) {
-            data[i].lyric_current = data[i].lyric_current.replace(/\\r/g, "\r");
+            data[i].lyric_current = data[i].lyric_current.replace(/\r/g, "\r");
         }
     }
 
@@ -410,21 +410,28 @@ function wrapTwoLines(s, limit) {
 
 
 
+function escapeLyricForExpression(l) {
+    if (!l) return "";
+
+    // 1. Escape backslashes FIRST
+    l = l.replace(/\\/g, "\\\\");    
+
+    // 2. Escape quotes
+    l = l.replace(/"/g, '\\"');      
+
+    // 3. Convert actual carriage-return characters to the literal sequence "\r"
+    l = l.replace(/\r/g, "\\r");
+
+    return l;
+}
+
 function replaceLyricArrayInLayer(layer, linesArray) {
-    var MAX = 25;
-
     var lines = [];
+
     for (var i = 0; i < linesArray.length; i++) {
-        var l = wrapTwoLines(linesArray[i], MAX);
-
-        // keep literal \r so AE splits lines
-        l = l.replace(/\r/g, "\\r");
-
-        // escape quotes and backslashes
-        l = l.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-
-        // push properly quoted JS string
-        lines.push('"' + l + '"');
+        var raw = String(linesArray[i] || "");
+        var esc = escapeLyricForExpression(raw);
+        lines.push('"' + esc + '"');
     }
 
     var newBlock =
@@ -436,8 +443,6 @@ function replaceLyricArrayInLayer(layer, linesArray) {
     if (!prop) return;
 
     var expr = prop.expression || "";
-
-    // match ANY var lyrics = [ ... ];
     var re = /var\s+lyrics\s*=\s*\[[\s\S]*?\];/i;
 
     if (re.test(expr)) {
@@ -446,6 +451,8 @@ function replaceLyricArrayInLayer(layer, linesArray) {
         prop.expression = newBlock + "\n" + expr;
     }
 }
+
+
 
 
 
@@ -579,28 +586,48 @@ function relinkFootageByName(itemName, newFilePath) {
 
 // Auto-resize any COVER layer to fit comp safely (preserves aspect)
 function autoResizeCoverInOutput(jobId) {
-    var comp = null;
-    try { comp = findCompByName("OUTPUT " + jobId); } catch (_) {}
+    var comp;
+    try { comp = findCompByName("OUTPUT " + jobId); }
+    catch(_) { return; }
     if (!comp) return;
 
-    // Find any layer named COVER, or whose source is named COVER
+    var cw = comp.width;
+    var ch = comp.height;
+
+    // Find COVER layer
     for (var i = 1; i <= comp.numLayers; i++) {
         var lyr = comp.layer(i);
         if (!(lyr instanceof AVLayer)) continue;
 
-        var isCover = (lyr.name && lyr.name.toUpperCase() === "COVER") ||
-                      (lyr.source && lyr.source.name && lyr.source.name.toUpperCase() === "COVER");
+        var isCover = (lyr.name.toUpperCase() === "COVER") ||
+                      (lyr.source && lyr.source.name.toUpperCase() === "COVER");
         if (!isCover) continue;
 
-        var cw = comp.width, ch = comp.height;
-        var lw = lyr.source && lyr.source.width, lh = lyr.source && lyr.source.height;
+        var lw = lyr.source.width;
+        var lh = lyr.source.height;
+
         if (!lw || !lh) continue;
 
-        var scale = 100 * Math.min(cw / lw, ch / lh);
-        try { lyr.property("Scale").setValue([scale, scale]); } catch (_) {}
-        $.writeln(" Auto-resized COVER in " + comp.name);
+        // --- FILL SCALE (no black bars, image always fills the comp) ---
+        var scaleW = cw / lw;
+        var scaleH = ch / lh;
+
+        // Choose the LARGER scale so the image covers fully
+        var scale = 100 * Math.max(scaleW, scaleH);
+
+        try {
+            lyr.property("Scale").setValue([scale, scale]);
+            // Optional: center the layer
+            lyr.property("Position").setValue([cw / 2, ch / 2]);
+        } catch(e) {}
+
+        $.writeln(" Auto-Fill scaled COVER in " + comp.name + " (scale: " + scale + ")");
+        return;
     }
+
+    $.writeln(" COVER layer not found in OUTPUT " + jobId);
 }
+
 
 function retargetImageLayersToFootage(assetComp, footageName) {
     if (!assetComp) return;
