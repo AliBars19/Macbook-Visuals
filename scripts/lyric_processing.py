@@ -89,7 +89,7 @@ def transcribe_audio(job_folder, song_title=None):
     os.makedirs(safe_dir, exist_ok=True)
 
     model = load_model(
-        "medium",
+        "large-v3",
         download_root=safe_dir,
         in_memory=False
     )
