@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Music Video Automation - Improved Version
-Same functionality, better code quality and efficiency
-"""
 import os
 import json
 from rich.console import Console
@@ -20,7 +15,6 @@ song_db = SongDatabase()
 
 
 def check_job_progress(job_folder):
-    """Check which stages are already complete for a job"""
     stages = {
         "audio_downloaded": os.path.exists(os.path.join(job_folder, "audio_source.mp3")),
         "audio_trimmed": os.path.exists(os.path.join(job_folder, "audio_trimmed.wav")),
@@ -44,7 +38,6 @@ def check_job_progress(job_folder):
 
 
 def process_single_job(job_id):
-    """Process a single job with database caching"""
     job_folder = f"jobs/job_{job_id:03}"
     os.makedirs(job_folder, exist_ok=True)
     
@@ -52,10 +45,24 @@ def process_single_job(job_id):
     
     stages, job_data = check_job_progress(job_folder)
     
+    # === Check if job is already complete ===
+    if stages["job_complete"] and all([
+        stages["audio_downloaded"],
+        stages["audio_trimmed"],
+        stages["lyrics_transcribed"],
+        stages["image_downloaded"],
+        stages["beats_generated"]
+    ]):
+        song_title = job_data.get("song_title", "Unknown")
+        console.print(f"[green] Job {job_id:03} already complete: {song_title}[/green]")
+        return True
+    
     # === Get Song Title FIRST ===
     song_title = job_data.get("song_title")
     if not song_title:
         song_title = input(f"[Job {job_id}] Song Title (Artist - Song): ").strip()
+    else:
+        console.print(f"[dim]Song: {song_title}[/dim]")
     
     # === Check Database for Cached Parameters ===
     cached_song = song_db.get_song(song_title)
@@ -100,11 +107,13 @@ def process_single_job(job_id):
     else:
         audio_path = os.path.join(job_folder, "audio_source.mp3")
         console.print(" Audio already downloaded")
-        # Get URL from cache or ask
-        if not cached_song:
-            audio_url = input(f"[Job {job_id}] Audio URL (for database): ").strip()
-        else:
+        # Get URL from job data, cache, or skip (not critical for existing jobs)
+        if cached_song:
             audio_url = cached_song["youtube_url"]
+        elif "audio_source" in job_data:
+            audio_url = job_data.get("youtube_url", "unknown")
+        else:
+            audio_url = "unknown"
     
     # === Audio Trimming ===
     if not stages["audio_trimmed"]:
@@ -132,18 +141,13 @@ def process_single_job(job_id):
     else:
         trimmed_path = os.path.join(job_folder, "audio_trimmed.wav")
         console.print(" Audio already trimmed")
-        # Get timing from cache or ask
-        if not cached_song:
-            start_time = input(f"[Job {job_id}] Start time (for database, MM:SS or Enter for 00:00): ").strip()
-            if not start_time:
-                start_time = "00:00"
-            if start_time == "00:00":
-                end_time = "01:01"
-            else:
-                end_time = input(f"[Job {job_id}] End time (for database, MM:SS): ").strip()
-        else:
+        # Get timing from job data or cache
+        if cached_song:
             start_time = cached_song["start_time"]
             end_time = cached_song["end_time"]
+        else:
+            start_time = job_data.get("start_time", "00:00")
+            end_time = job_data.get("end_time", "01:01")
     
     # === Beat Detection ===
     beats_path = os.path.join(job_folder, "beats.json")
@@ -187,7 +191,7 @@ def process_single_job(job_id):
             transcribed_lyrics = json.load(f)
         console.print(" Lyrics already transcribed")
     
-    #Image Download
+    # === Image Download ===
     if cached_image_url:
         console.print("[green] Using cached image URL[/green]")
         if not stages["image_downloaded"]:
@@ -205,6 +209,7 @@ def process_single_job(job_id):
             image_path = fetch_genius_image(song_title, job_folder)
             
             if image_path:
+                # Get the image URL if we fetched it
                 genius_image_url = "fetched_from_genius"
             else:
                 console.print("[yellow]Couldn't auto-fetch image from Genius[/yellow]")
@@ -227,7 +232,7 @@ def process_single_job(job_id):
         genius_image_url = cached_image_url or "unknown"
         console.print(" Image already downloaded")
     
-    #Color Extraction
+    # === Color Extraction ===
     if cached_colors:
         console.print(f"[green] Using cached colors: {', '.join(cached_colors)}[/green]")
         colors = cached_colors
@@ -235,7 +240,7 @@ def process_single_job(job_id):
         console.print("[cyan]Extracting colors...[/cyan]")
         colors = extract_colors(job_folder)
     
-    #Save to Database
+    # === Save to Database ===
     if not cached_song:
         console.print(f"[cyan] Saving '{song_title}' to database...[/cyan]")
         song_db.add_song(
@@ -255,7 +260,7 @@ def process_single_job(job_id):
         if 'transcribed_lyrics' in locals() and transcribed_lyrics:
             song_db.update_lyrics(song_title, transcribed_lyrics)
     
-    #Save Job Data
+    # === Save Job Data ===
     job_data = {
         "job_id": job_id,
         "audio_source": audio_path.replace("\\", "/"),
@@ -265,7 +270,10 @@ def process_single_job(job_id):
         "lyrics_file": lyrics_path.replace("\\", "/"),
         "beats": beats,
         "job_folder": job_folder.replace("\\", "/"),
-        "song_title": song_title
+        "song_title": song_title,
+        "youtube_url": audio_url,
+        "start_time": start_time,
+        "end_time": end_time
     }
     
     json_path = os.path.join(job_folder, "job_data.json")
