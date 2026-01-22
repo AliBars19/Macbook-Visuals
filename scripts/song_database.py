@@ -1,3 +1,4 @@
+"""Song database for caching parameters and lyrics"""
 import sqlite3
 import json
 import os
@@ -5,13 +6,16 @@ from datetime import datetime
 from pathlib import Path
 
 
-class SongDatabase:    
+class SongDatabase:
+    """SQLite database for caching song parameters and transcriptions"""
+    
     def __init__(self, db_path="database/songs.db"):
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.init_database()
     
     def init_database(self):
+        """Create database tables if they don't exist"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -36,6 +40,10 @@ class SongDatabase:
         conn.close()
     
     def get_song(self, song_title):
+        """
+        Get song parameters from database
+        Returns dict with all parameters or None if not found
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -64,6 +72,9 @@ class SongDatabase:
     
     def add_song(self, song_title, youtube_url, start_time, end_time, 
                  genius_image_url=None, transcribed_lyrics=None, colors=None, beats=None):
+        """
+        Add new song to database or update if exists
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -93,6 +104,7 @@ class SongDatabase:
         conn.close()
     
     def update_lyrics(self, song_title, transcribed_lyrics):
+        """Update transcribed lyrics for a song"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -108,6 +120,7 @@ class SongDatabase:
         conn.close()
     
     def update_image_url(self, song_title, genius_image_url):
+        """Update Genius image URL for a song"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -121,6 +134,7 @@ class SongDatabase:
         conn.close()
     
     def update_colors_and_beats(self, song_title, colors, beats):
+        """Update colors and beats for a song"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -137,6 +151,7 @@ class SongDatabase:
         conn.close()
     
     def list_all_songs(self):
+        """Get list of all songs in database"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -152,6 +167,7 @@ class SongDatabase:
         return songs
     
     def search_songs(self, query):
+        """Search for songs by partial title match"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -168,7 +184,24 @@ class SongDatabase:
         
         return songs
     
+    def delete_song(self, song_title):
+        """Delete a song from the database"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            DELETE FROM songs 
+            WHERE LOWER(song_title) = LOWER(?)
+        """, (song_title,))
+        
+        deleted_count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        
+        return deleted_count > 0
+    
     def get_stats(self):
+        """Get database statistics"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         

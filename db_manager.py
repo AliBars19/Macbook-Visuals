@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+"""
+Database Manager - View and manage cached songs
+"""
 import sys
 from rich.console import Console
 from rich.table import Table
@@ -8,6 +12,7 @@ db = SongDatabase()
 
 
 def show_all_songs():
+    """Display all songs in database"""
     songs = db.list_all_songs()
     
     if not songs:
@@ -26,9 +31,10 @@ def show_all_songs():
 
 
 def show_stats():
+    """Display database statistics"""
     stats = db.get_stats()
     
-    console.print("\n[bold cyan] Database Statistics[/bold cyan]\n")
+    console.print("\n[bold cyan]📊 Database Statistics[/bold cyan]\n")
     console.print(f"  Total songs: [green]{stats['total_songs']}[/green]")
     console.print(f"  Songs with cached lyrics: [green]{stats['cached_lyrics']}[/green]")
     console.print(f"  Total uses: [green]{stats['total_uses']}[/green]")
@@ -39,6 +45,7 @@ def show_stats():
 
 
 def search_song(query):
+    """Search for songs"""
     results = db.search_songs(query)
     
     if not results:
@@ -59,13 +66,14 @@ def search_song(query):
 
 
 def show_song_details(song_title):
+    """Show detailed info for a specific song"""
     song = db.get_song(song_title)
     
     if not song:
         console.print(f"[red]Song '{song_title}' not found in database[/red]")
         return
     
-    console.print(f"\n[bold cyan] {song_title}[/bold cyan]\n")
+    console.print(f"\n[bold cyan]📀 {song_title}[/bold cyan]\n")
     console.print(f"  YouTube URL: [blue]{song['youtube_url']}[/blue]")
     console.print(f"  Timing: [green]{song['start_time']} → {song['end_time']}[/green]")
     
@@ -85,7 +93,37 @@ def show_song_details(song_title):
         console.print(f"  Beats: [green]{len(song['beats'])} detected[/green]")
 
 
+def delete_song_interactive(song_title):
+    """Delete a song from the database with confirmation"""
+    song = db.get_song(song_title)
+    
+    if not song:
+        console.print(f"[red]Song '{song_title}' not found in database[/red]")
+        return
+    
+    # Show what will be deleted
+    console.print(f"\n[red bold]⚠️  About to delete:[/red bold]")
+    console.print(f"  Song: [cyan]{song_title}[/cyan]")
+    console.print(f"  URL: {song['youtube_url']}")
+    console.print(f"  Timing: {song['start_time']} → {song['end_time']}")
+    if song['transcribed_lyrics']:
+        console.print(f"  Cached lyrics: [yellow]{len(song['transcribed_lyrics'])} segments[/yellow]")
+    
+    # Confirm
+    response = input("\nType 'yes' to confirm deletion: ")
+    if response.lower() != "yes":
+        console.print("[yellow]Cancelled[/yellow]")
+        return
+    
+    # Delete
+    if db.delete_song(song_title):
+        console.print(f"\n[green]✓ Deleted '{song_title}' from database[/green]")
+    else:
+        console.print(f"[red]Failed to delete '{song_title}'[/red]")
+
+
 def main():
+    """Main CLI interface"""
     if len(sys.argv) < 2:
         console.print("\n[bold]Database Manager[/bold]\n")
         console.print("Usage:")
@@ -93,9 +131,11 @@ def main():
         console.print("  python db_manager.py stats         - Show statistics")
         console.print("  python db_manager.py search QUERY  - Search for songs")
         console.print("  python db_manager.py show \"TITLE\"  - Show song details")
+        console.print("  python db_manager.py delete \"TITLE\" - Delete a song")
         console.print("\nExamples:")
         console.print("  python db_manager.py search drake")
         console.print("  python db_manager.py show \"Drake - God's Plan\"")
+        console.print("  python db_manager.py delete \"DNCE - Cake By The Ocean\"")
         return
     
     command = sys.argv[1].lower()
@@ -120,9 +160,16 @@ def main():
         song_title = " ".join(sys.argv[2:])
         show_song_details(song_title)
     
+    elif command == "delete":
+        if len(sys.argv) < 3:
+            console.print("[red]Please provide a song title[/red]")
+            return
+        song_title = " ".join(sys.argv[2:])
+        delete_song_interactive(song_title)
+    
     else:
         console.print(f"[red]Unknown command: {command}[/red]")
-        console.print("Use: list, stats, search, or show")
+        console.print("Use: list, stats, search, show, or delete")
 
 
 if __name__ == "__main__":
