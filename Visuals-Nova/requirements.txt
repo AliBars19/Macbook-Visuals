@@ -1,0 +1,10 @@
+Required Libraries
+
+- yt_dlp
+- ffmpeg
+- requests
+- pillow
+- colorthief
+- matplotlib
+- openai-whisper
+- librosa

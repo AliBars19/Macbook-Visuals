@@ -1,0 +1,8 @@
+.env
+spotify_api_data.txt
+/jobs
+/scripts/__pycache__
+/template
+/whisper_models
+/__pycache__
+/database
