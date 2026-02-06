@@ -410,12 +410,17 @@ function relinkAudioOnly(jobId, audioPath) {
         if (!(it instanceof FootageItem)) continue;
 
         var name = (it.name || "").toUpperCase();
-        if (name === "AUDIO") {
+        // Match AUDIO, audio_trimmed.wav, or any .wav file
+        var isAudio = (name === "AUDIO") || 
+                      (name.indexOf("AUDIO") === 0) || 
+                      (name.indexOf(".WAV") !== -1);
+        
+        if (isAudio) {
             try {
                 it.replace(audioFile);
-                $.writeln("Replaced AUDIO inside Assets OT" + jobId);
+                $.writeln("Replaced " + it.name + " inside Assets OT" + jobId);
             } catch (e) {
-                $.writeln("Could not relink AUDIO: " + e.toString());
+                $.writeln("Could not relink audio: " + e.toString());
             }
         }
     }
@@ -505,10 +510,16 @@ function relinkFootageInsideOutputFolder(jobId, audioPath, coverPath) {
         if (!(it instanceof FootageItem)) continue;
 
         var name = (it.name || "").toUpperCase();
+        
+        // Match audio files
+        var isAudio = (name === "AUDIO") || 
+                      (name.indexOf("AUDIO") === 0) || 
+                      (name.indexOf(".WAV") !== -1);
+        
         try {
-            if (name === "AUDIO" && audioFile.exists) {
+            if (isAudio && audioFile.exists) {
                 it.replace(audioFile);
-                $.writeln("Replaced AUDIO inside Assets OT" + jobId);
+                $.writeln("Replaced " + it.name + " inside Assets OT" + jobId);
             } else if (name === "COVER" && coverFile.exists) {
                 it.replace(coverFile);
                 $.writeln("Replaced COVER inside Assets OT" + jobId);
@@ -559,26 +570,64 @@ function setWorkAreaToAudioDuration(jobId) {
     catch(_) { return; }
 
     var audio = ensureAudioLayer(comp);
-    if (!audio || !audio.source || !audio.source.duration) return;
+    if (!audio || !audio.source || !audio.source.duration) {
+        $.writeln("Could not get audio duration for LYRIC FONT " + jobId);
+        return;
+    }
 
     var dur = audio.source.duration;
     comp.duration = dur;
     comp.workAreaStart = 0;
     comp.workAreaDuration = dur;
+    $.writeln("Set LYRIC FONT " + jobId + " duration to " + dur + "s");
 }
 
 function setOutputWorkAreaToAudio(jobId, audioPath) {
-    var comp;
-    try { comp = findCompByName("OUTPUT " + jobId); }
-    catch(_) { return; }
-
-    var imported = app.project.importFile(new ImportOptions(new File(audioPath)));
+    // Import audio to get accurate duration
+    var audioFile = new File(audioPath);
+    if (!audioFile.exists) {
+        $.writeln("Audio file not found for duration check: " + audioPath);
+        return;
+    }
+    
+    var imported = app.project.importFile(new ImportOptions(audioFile));
     var dur = imported.duration;
     imported.remove();
+    
+    $.writeln("Audio duration for job " + jobId + ": " + dur + "s");
 
-    comp.duration = dur;
-    comp.workAreaStart = 0;
-    comp.workAreaDuration = dur;
+    // Set OUTPUT comp duration
+    try {
+        var outputComp = findCompByName("OUTPUT " + jobId);
+        outputComp.duration = dur;
+        outputComp.workAreaStart = 0;
+        outputComp.workAreaDuration = dur;
+        $.writeln("Set OUTPUT " + jobId + " duration to " + dur + "s");
+    } catch(e) {
+        $.writeln("Could not set OUTPUT " + jobId + " duration: " + e.toString());
+    }
+    
+    // Set LYRIC FONT comp duration
+    try {
+        var lyricComp = findCompByName("LYRIC FONT " + jobId);
+        lyricComp.duration = dur;
+        lyricComp.workAreaStart = 0;
+        lyricComp.workAreaDuration = dur;
+        $.writeln("Set LYRIC FONT " + jobId + " duration to " + dur + "s");
+    } catch(e) {
+        $.writeln("Could not set LYRIC FONT " + jobId + " duration: " + e.toString());
+    }
+    
+    // Set BACKGROUND comp duration
+    try {
+        var bgComp = findCompByName("BACKGROUND " + jobId);
+        bgComp.duration = dur;
+        bgComp.workAreaStart = 0;
+        bgComp.workAreaDuration = dur;
+        $.writeln("Set BACKGROUND " + jobId + " duration to " + dur + "s");
+    } catch(e) {
+        $.writeln("Could not set BACKGROUND " + jobId + " duration: " + e.toString());
+    }
 }
 
 function updateSongTitle(jobId, titleText) {
