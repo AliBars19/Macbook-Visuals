@@ -167,14 +167,28 @@ function main() {
 
         // Add to render queue
         try {
-            var renderPath = addToRenderQueue(
-                findCompByName("OUTPUT " + jobId),
-                jobData.job_folder,
-                jobId,
-                songTitle,
-                "_NOVA"
-            );
-            $.writeln("Queued: " + renderPath);
+            var outputComp = null;
+            // Try different naming conventions
+            try { outputComp = findCompByName("OUTPUT " + jobId); } catch(e1) {}
+            if (!outputComp) {
+                try { outputComp = findCompByName("OUTPUT" + jobId); } catch(e2) {}
+            }
+            if (!outputComp) {
+                try { outputComp = findCompByName("OUTPUT " + jobId + " "); } catch(e3) {}
+            }
+            
+            if (outputComp) {
+                var renderPath = addToRenderQueue(
+                    outputComp,
+                    jobData.job_folder,
+                    jobId,
+                    songTitle,
+                    "_NOVA"
+                );
+                $.writeln("Queued: " + renderPath);
+            } else {
+                $.writeln("Could not find OUTPUT comp for job " + jobId + " - skipping render queue");
+            }
         } catch (e) {
             $.writeln("Render queue error: " + e);
         }
@@ -697,21 +711,35 @@ function retargetImageLayersToFootage(assetComp, footageName) {
 }
 
 function addToRenderQueue(comp, jobFolder, jobId, songTitle, suffix) {
-    var root = new Folder(jobFolder).parent;
-    var renderDir = new Folder(root.fsName + "/renders");
-    if (!renderDir.exists) renderDir.create();
+    try {
+        // Normalize path
+        jobFolder = String(jobFolder).replace(/\\/g, "/");
+        
+        // Get parent folder (jobs folder) and create renders directory
+        var jobFolderObj = new Folder(jobFolder);
+        var root = jobFolderObj.parent;
+        
+        var renderDir = new Folder(root.fsName + "/renders");
+        if (!renderDir.exists) {
+            renderDir.create();
+        }
 
-    var safeTitle = sanitizeFilename(songTitle);
-    var filename = safeTitle + (suffix || "") + ".mp4";
-    var outPath = renderDir.fsName + "/" + filename;
-    var outFile = new File(outPath);
+        var safeTitle = sanitizeFilename(songTitle);
+        var filename = safeTitle + (suffix || "") + ".mp4";
+        var outPath = renderDir.fsName.replace(/\\/g, "/") + "/" + filename;
+        var outFile = new File(outPath);
 
-    var rq = app.project.renderQueue.items.add(comp);
-    try { rq.applyTemplate("Best Settings"); } catch (e) {}
-    try { rq.outputModule(1).applyTemplate("H.264"); } catch (e) {}
-    rq.outputModule(1).file = outFile;
+        // Add to render queue
+        var rq = app.project.renderQueue.items.add(comp);
+        
+        // Set output file (skip templates - use defaults)
+        rq.outputModule(1).file = outFile;
 
-    return outPath;
+        return outPath;
+    } catch (err) {
+        $.writeln("addToRenderQueue error: " + err.toString());
+        return null;
+    }
 }
 
 function sanitizeFilename(name) {
