@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Smart Picker - Nova Edition
-Auto-select 12 songs and run them with Nova processing
+Smart Picker - Mono Edition
+Auto-select 12 songs and run them with Mono processing
 """
 import os
 import sys
@@ -17,26 +17,26 @@ from rich.console import Console
 
 console = Console()
 
-# Shared database path (one level up from Visuals-Nova)
-# Structure: MV-AE-PROJECT/database/songs.db
-#           MV-AE-PROJECT/Visuals-Nova/run_smart_picker_nova.py (this file)
+# Shared database path (one level up from Apollova-Mono)
+# Structure: Apollova/database/songs.db
+#           Apollova/Apollova-Mono/smart_picker.py (this file)
 SHARED_DB = Path(__file__).parent.parent / "database" / "songs.db"
 
 
 def main():
-    console.print("[bold magenta]🤖 Smart Song Picker - Visuals Nova[/bold magenta]\n")
+    console.print("[bold magenta]🤖 Smart Song Picker - Apollova Mono[/bold magenta]\n")
     
     # Check database exists
     if not SHARED_DB.exists():
         console.print(f"[red]❌ Database not found at: {SHARED_DB}[/red]")
-        console.print("[yellow]Run main_nova.py first to create the database.[/yellow]")
+        console.print("[yellow]Run main_mono.py first to create the database.[/yellow]")
         return
     
     picker = SmartSongPicker(db_path=str(SHARED_DB))
     stats = picker.get_database_stats()
     
     if stats['total_songs'] == 0:
-        console.print("[red]❌ Database is empty. Add songs first using main_nova.py[/red]")
+        console.print("[red]❌ Database is empty. Add songs first using main_mono.py[/red]")
         return
     
     console.print(f"[dim]📊 Database: {SHARED_DB}[/dim]")
@@ -111,7 +111,7 @@ def main():
     if successful == num_jobs:
         console.print(f"\n[green]✅ All Mono jobs ready![/green]")
         console.print("[magenta]Next step:[/magenta] Run the After Effects JSX script")
-        console.print("[dim]File → Scripts → Run Script File... → scripts/JSX/automateMV_nova.jsx[/dim]\n")
+        console.print("[dim]File → Scripts → Run Script File... → scripts/JSX/automateMV_mono.jsx[/dim]\n")
 
 
 if __name__ == "__main__":

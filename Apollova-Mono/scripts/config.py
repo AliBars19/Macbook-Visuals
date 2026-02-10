@@ -12,26 +12,26 @@ class Config:
     
     # Whisper Settings
     WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
-    WHISPER_CACHE_DIR = "Apollova-Mono/whisper_models"
-    
+    WHISPER_CACHE_DIR = "whisper_models"
+
     # Job Settings
     TOTAL_JOBS = int(os.getenv("TOTAL_JOBS", "12"))
-    
+
     # Processing Settings
     MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "3"))
-    
+
     # File Paths
-    JOBS_DIR = "Apollova-Mono/jobs"
-    
+    JOBS_DIR = "jobs"
+
     # Audio Settings
     AUDIO_FORMAT = "mp3"
     TRIMMED_FORMAT = "wav"
-    
-    # Nova-specific Settings (no images needed)
+
+    # Mono-specific Settings (no images needed)
     # Colors are determined by marker index (odd/even)
-    
+
     # Lyric Settings
-    MAX_LINE_LENGTH = 40  # Nova can have longer lines (no image overlay)
+    MAX_LINE_LENGTH = 40  # Mono can have longer lines (no image overlay)
     
     @classmethod
     def validate(cls):

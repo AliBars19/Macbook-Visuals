@@ -47,7 +47,7 @@ def check_job_progress(job_folder):
 
 def process_single_job(job_id):
     """Process a single job with database caching"""
-    job_folder = f"Visuals-Aurora/jobs/job_{job_id:03}"
+    job_folder = os.path.join(os.path.dirname(__file__), "jobs", f"job_{job_id:03}")
     os.makedirs(job_folder, exist_ok=True)
     
     console.print(f"\n[bold cyan]━━━ Job {job_id:03} ━━━[/bold cyan]")
@@ -277,13 +277,13 @@ def process_single_job(job_id):
     # === Save Job Data ===
     job_data = {
         "job_id": job_id,
-        "audio_source": audio_path.replace("\\", "/"),
-        "audio_trimmed": trimmed_path.replace("\\", "/"),
-        "cover_image": image_path.replace("\\", "/"),
+        "audio_source": os.path.abspath(audio_path).replace("\\", "/"),
+        "audio_trimmed": os.path.abspath(trimmed_path).replace("\\", "/"),
+        "cover_image": os.path.abspath(image_path).replace("\\", "/"),
         "colors": colors,
-        "lyrics_file": lyrics_path.replace("\\", "/"),
+        "lyrics_file": os.path.abspath(lyrics_path).replace("\\", "/"),
         "beats": beats,
-        "job_folder": job_folder.replace("\\", "/"),
+        "job_folder": os.path.abspath(job_folder).replace("\\", "/"),
         "song_title": song_title,
         "youtube_url": audio_url,
         "start_time": start_time,
@@ -301,12 +301,13 @@ def process_single_job(job_id):
 def batch_generate_jobs():
     """Generate all jobs with database caching"""
     console.print("\n[bold cyan]🎬 Music Video Automation[/bold cyan]\n")
-    
+
     # Validate config
     Config.validate()
-    
-    # Create jobs directory
-    os.makedirs(Config.JOBS_DIR, exist_ok=True)
+
+    # Create jobs directory relative to this script
+    jobs_dir = os.path.join(os.path.dirname(__file__), Config.JOBS_DIR)
+    os.makedirs(jobs_dir, exist_ok=True)
     
     # Show database stats
     stats = song_db.get_stats()

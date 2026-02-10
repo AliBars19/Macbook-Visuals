@@ -46,7 +46,7 @@ def check_job_progress(job_folder):
 
 def process_single_job(job_id):
     """Process a single job with database caching"""
-    job_folder = f"jobs/job_{job_id:03}"
+    job_folder = os.path.join(os.path.dirname(__file__), Config.JOBS_DIR, f"job_{job_id:03}")
     os.makedirs(job_folder, exist_ok=True)
     
     console.print(f"\n[bold magenta]━━━ Onyx Job {job_id:03} ━━━[/bold magenta]")
@@ -262,12 +262,12 @@ def process_single_job(job_id):
     # === Save Job Data ===
     job_data = {
         "job_id": job_id,
-        "audio_source": audio_path.replace("\\", "/"),
-        "audio_trimmed": trimmed_path.replace("\\", "/"),
-        "cover_image": image_path.replace("\\", "/"),
+        "audio_source": os.path.abspath(audio_path).replace("\\", "/"),
+        "audio_trimmed": os.path.abspath(trimmed_path).replace("\\", "/"),
+        "cover_image": os.path.abspath(image_path).replace("\\", "/"),
         "colors": colors,
-        "onyx_data": onyx_data_path.replace("\\", "/"),
-        "job_folder": job_folder.replace("\\", "/"),
+        "onyx_data": os.path.abspath(onyx_data_path).replace("\\", "/"),
+        "job_folder": os.path.abspath(job_folder).replace("\\", "/"),
         "song_title": song_title,
         "youtube_url": audio_url,
         "start_time": start_time,

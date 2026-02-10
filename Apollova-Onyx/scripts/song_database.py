@@ -28,7 +28,7 @@ class SongDatabase:
                 end_time TEXT NOT NULL,
                 genius_image_url TEXT,
                 transcribed_lyrics TEXT,
-                nova_lyrics TEXT,
+                onyx_lyrics TEXT,
                 onyx_lyrics TEXT,
                 colors TEXT,
                 beats TEXT,
@@ -38,9 +38,9 @@ class SongDatabase:
             )
         """)
         
-        # Add nova_lyrics column if it doesn't exist (for existing databases)
+        # Add onyx_lyrics column if it doesn't exist (for existing databases)
         try:
-            cursor.execute("ALTER TABLE songs ADD COLUMN nova_lyrics TEXT")
+            cursor.execute("ALTER TABLE songs ADD COLUMN onyx_lyrics TEXT")
         except sqlite3.OperationalError:
             pass  # Column already exists
         
@@ -84,13 +84,13 @@ class SongDatabase:
             "beats": json.loads(row[6]) if row[6] else None
         }
     
-    def get_nova_lyrics(self, song_title):
-        """Get Nova-specific lyrics (word-level timestamps)"""
+    def get_onyx_lyrics(self, song_title):
+        """Get Onyx-specific lyrics (word-level timestamps)"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT nova_lyrics FROM songs 
+            SELECT onyx_lyrics FROM songs 
             WHERE LOWER(song_title) = LOWER(?)
         """, (song_title,))
         
@@ -102,16 +102,16 @@ class SongDatabase:
         
         return json.loads(row[0])
     
-    def update_nova_lyrics(self, song_title, nova_lyrics):
-        """Update Nova-specific lyrics"""
+    def update_onyx_lyrics(self, song_title, onyx_lyrics):
+        """Update Onyx-specific lyrics"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        lyrics_json = json.dumps(nova_lyrics) if nova_lyrics else None
+        lyrics_json = json.dumps(onyx_lyrics) if onyx_lyrics else None
         
         cursor.execute("""
             UPDATE songs 
-            SET nova_lyrics = ?, last_used = CURRENT_TIMESTAMP
+            SET onyx_lyrics = ?, last_used = CURRENT_TIMESTAMP
             WHERE LOWER(song_title) = LOWER(?)
         """, (lyrics_json, song_title))
         

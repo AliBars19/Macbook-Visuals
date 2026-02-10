@@ -82,10 +82,14 @@ function main() {
         try { jobData = JSON.parse(jsonText); }
         catch (e) { alert("Error parsing " + jobFile.name + ": " + e.toString()); continue; }
 
-        jobData.audio_trimmed = toAbsolute(jobData.audio_trimmed);
-        jobData.cover_image   = toAbsolute(jobData.cover_image);
-        jobData.lyrics_file   = toAbsolute(jobData.lyrics_file);
-        jobData.job_folder    = toAbsolute(jobData.job_folder);
+        // Get job folder from the json file location (reliable)
+        var jobFolder = jobFile.parent;
+        
+        // Convert paths to absolute WITH FALLBACKS (like Nova)
+        jobData.audio_trimmed = toAbsolute(jobData.audio_trimmed) || (jobFolder.fsName + "/audio_trimmed.wav");
+        jobData.cover_image   = toAbsolute(jobData.cover_image) || (jobFolder.fsName + "/cover.jpg");
+        jobData.lyrics_file   = toAbsolute(jobData.lyrics_file) || (jobFolder.fsName + "/lyrics.json");
+        jobData.job_folder    = jobFolder.fsName.replace(/\\/g, "/");
 
         $.writeln("──────── Job " + jobData.job_id + " ────────");
 
@@ -373,21 +377,29 @@ function setAudioMarkersFromTArray(lyricComp, tAndText) {
 
 
 function addToRenderQueue(comp, jobFolder, jobId, songTitle) {
-    var root = new Folder(jobFolder).parent;
-    var renderDir = new Folder(root.fsName + "/renders");
-    if (!renderDir.exists) renderDir.create();
+    try {
+        // Normalize path
+        jobFolder = String(jobFolder).replace(/\\/g, "/");
+        
+        var root = new Folder(jobFolder).parent;
+        var renderDir = new Folder(root.fsName + "/renders");
+        if (!renderDir.exists) renderDir.create();
 
-    var safeTitle = sanitizeFilename(songTitle);
-    var filename = safeTitle + ".mp4";
-    var outPath = renderDir.fsName + "/" + filename;
-    var outFile = new File(outPath);
+        var safeTitle = sanitizeFilename(songTitle);
+        var filename = safeTitle + ".mp4";
+        var outPath = renderDir.fsName.replace(/\\/g, "/") + "/" + filename;
+        var outFile = new File(outPath);
 
-    var rq = app.project.renderQueue.items.add(comp);
-    try { rq.applyTemplate("Best Settings"); } catch (e) {}
-    try { rq.outputModule(1).applyTemplate("H.264"); } catch (e) {}
-    rq.outputModule(1).file = outFile;
+        var rq = app.project.renderQueue.items.add(comp);
+        try { rq.applyTemplate("Best Settings"); } catch (e) {}
+        try { rq.outputModule(1).applyTemplate("H.264"); } catch (e) {}
+        rq.outputModule(1).file = outFile;
 
-    return outPath;
+        return outPath;
+    } catch (err) {
+        $.writeln("addToRenderQueue error: " + err.toString());
+        return null;
+    }
 }
 
 
@@ -614,8 +626,12 @@ function relinkFootageInsideOutputFolder(jobId, audioPath, coverPath) {
 
     var audioFile = new File(audioPath);
     var coverFile = new File(coverPath);
-    if (!audioFile.exists || !coverFile.exists) {
-        $.writeln(" Missing audio or cover file for job " + jobId);
+    if (!audioFile.exists) {
+        $.writeln(" Missing audio file for job " + jobId);
+        return;
+    }
+    if (!coverFile.exists) {
+        $.writeln(" Missing cover file for job " + jobId);
         return;
     }
 
@@ -624,10 +640,16 @@ function relinkFootageInsideOutputFolder(jobId, audioPath, coverPath) {
         if (!(it instanceof FootageItem)) continue;
 
         var name = (it.name || "").toUpperCase();
+        
+        // Match audio files - check for AUDIO, audio_trimmed.wav, or any .wav file
+        var isAudio = (name === "AUDIO") || 
+                      (name.indexOf("AUDIO") === 0) || 
+                      (name.indexOf(".WAV") !== -1);
+        
         try {
-            if (name === "AUDIO") {
+            if (isAudio) {
                 it.replace(audioFile);
-                $.writeln(" Replaced AUDIO inside Assets OT" + jobId);
+                $.writeln(" Replaced " + it.name + " inside Assets OT" + jobId);
             } else if (name === "COVER") {
                 it.replace(coverFile);
                 $.writeln(" Replaced COVER inside Assets OT" + jobId);

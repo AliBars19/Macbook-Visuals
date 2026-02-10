@@ -17,14 +17,14 @@ from rich.console import Console
 
 console = Console()
 
-# Shared database path (one level up from Visuals-Aurora)
-# Structure: MV-AE-PROJECT/database/songs.db
-#           MV-AE-PROJECT/Visuals-Aurora/run_smart_picker.py (this file)
+# Shared database path (one level up from Apollova-Aurora)
+# Structure: Apollova/database/songs.db
+#           Apollova/Apollova-Aurora/smart_picker.py (this file)
 SHARED_DB = Path(__file__).parent.parent / "database" / "songs.db"
 
 
 def main():
-    console.print("[bold cyan]🤖 Smart Song Picker - Visuals Aurora[/bold cyan]\n")
+    console.print("[bold cyan]🤖 Smart Song Picker - Apollova Aurora[/bold cyan]\n")
     
     # Check database exists
     if not SHARED_DB.exists():

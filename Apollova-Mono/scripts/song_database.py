@@ -137,13 +137,13 @@ class SongDatabase:
         conn.commit()
         conn.close()
     
-    def get_nova_lyrics(self, song_title):
-        """Get Nova-format lyrics from database (word-level timestamps)"""
+    def get_mono_lyrics(self, song_title):
+        """Get Mono-format lyrics from database (word-level timestamps)"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT nova_lyrics FROM songs 
+            SELECT mono_lyrics FROM songs 
             WHERE LOWER(song_title) = LOWER(?)
         """, (song_title,))
         
@@ -155,16 +155,16 @@ class SongDatabase:
         
         return json.loads(row[0])
     
-    def update_nova_lyrics(self, song_title, nova_lyrics):
-        """Update Nova-format lyrics for a song (word-level timestamps)"""
+    def update_mono_lyrics(self, song_title, mono_lyrics):
+        """Update Mono-format lyrics for a song (word-level timestamps)"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        lyrics_json = json.dumps(nova_lyrics)
+        lyrics_json = json.dumps(mono_lyrics)
         
         cursor.execute("""
             UPDATE songs 
-            SET nova_lyrics = ?, last_used = CURRENT_TIMESTAMP
+            SET mono_lyrics = ?, last_used = CURRENT_TIMESTAMP
             WHERE LOWER(song_title) = LOWER(?)
         """, (lyrics_json, song_title))
         

@@ -1,5 +1,5 @@
 """
-Nova Lyric Processing - Word-level timestamp extraction
+Mono Lyric Processing - Word-level timestamp extraction
 For minimal text-only lyric videos with word-by-word reveal
 """
 import os
@@ -11,15 +11,15 @@ from scripts.config import Config
 from scripts.genius_processing import fetch_genius_lyrics
 
 
-def transcribe_audio_nova(job_folder, song_title=None):
+def transcribe_audio_mono(job_folder, song_title=None):
     """
-    Transcribe audio with word-level timestamps for Nova style videos
+    Transcribe audio with word-level timestamps for Mono style videos
     
     Returns dict with:
         - markers: list of marker objects for JSX
         - Each marker has: time, text, words[], color, end_time
     """
-    print(f"\n✎ Nova Transcription ({Config.WHISPER_MODEL})...")
+    print(f"\n✎ Mono Transcription ({Config.WHISPER_MODEL})...")
     
     audio_path = os.path.join(job_folder, "audio_trimmed.wav")
     
@@ -40,7 +40,7 @@ def transcribe_audio_nova(job_folder, song_title=None):
         # Transcribe with word-level timestamps
         result = model.transcribe(
             audio_path,
-            word_timestamps=True,  # Critical for Nova word-by-word
+            word_timestamps=True,  # Critical for Mono word-by-word
             vad=True,
             suppress_silence=False,
             regroup=True,
@@ -81,7 +81,7 @@ def transcribe_audio_nova(job_folder, song_title=None):
                     if ln.strip() and not (ln.startswith("[") and ln.endswith("]"))
                 ]
         
-        # Build Nova markers
+        # Build Mono markers
         markers = []
         genius_idx = 0
         
@@ -139,7 +139,7 @@ def transcribe_audio_nova(job_folder, song_title=None):
         # Remove consecutive duplicates
         markers = _remove_duplicate_markers(markers)
         
-        print(f"✓ Nova transcription complete: {len(markers)} markers")
+        print(f"✓ Mono transcription complete: {len(markers)} markers")
         
         return {
             "markers": markers,
@@ -147,7 +147,7 @@ def transcribe_audio_nova(job_folder, song_title=None):
         }
         
     except Exception as e:
-        print(f"❌ Nova transcription failed: {e}")
+        print(f"❌ Mono transcription failed: {e}")
         raise
 
 
