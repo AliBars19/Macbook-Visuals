@@ -5,6 +5,7 @@ Auto-select 12 songs and run them with Mono processing
 """
 import os
 import sys
+import shutil
 from pathlib import Path
 
 # Ensure this script can find local modules
@@ -17,10 +18,46 @@ from rich.console import Console
 
 console = Console()
 
-# Shared database path (one level up from Apollova-Mono)
-# Structure: Apollova/database/songs.db
-#           Apollova/Apollova-Mono/smart_picker.py (this file)
+# Shared database path
 SHARED_DB = Path(__file__).parent.parent / "database" / "songs.db"
+
+
+def check_existing_jobs():
+    """Check if jobs folder already has completed jobs and offer to delete"""
+    jobs_dir = os.path.join(os.path.dirname(__file__), "jobs")
+    
+    if not os.path.exists(jobs_dir):
+        return True
+    
+    existing_jobs = []
+    for i in range(1, 13):
+        job_folder = os.path.join(jobs_dir, f"job_{i:03}")
+        job_data_path = os.path.join(job_folder, "job_data.json")
+        if os.path.exists(job_data_path):
+            existing_jobs.append(i)
+    
+    if not existing_jobs:
+        return True
+    
+    console.print(f"[yellow]⚠️  Found {len(existing_jobs)} existing completed jobs[/yellow]")
+    console.print(f"[dim]   Jobs: {', '.join(str(j) for j in existing_jobs)}[/dim]")
+    
+    response = input("\nDelete existing jobs and start fresh? (y/N): ").strip().lower()
+    
+    if response == 'y':
+        for i in range(1, 13):
+            job_folder = os.path.join(jobs_dir, f"job_{i:03}")
+            if os.path.exists(job_folder):
+                try:
+                    shutil.rmtree(job_folder)
+                    console.print(f"[dim]   Deleted job_{i:03}[/dim]")
+                except Exception as e:
+                    console.print(f"[red]   Failed to delete job_{i:03}: {e}[/red]")
+        console.print("[green]✓ Cleared existing jobs[/green]\n")
+        return True
+    else:
+        console.print("[yellow]Cancelled.[/yellow]")
+        return False
 
 
 def main():
@@ -29,14 +66,18 @@ def main():
     # Check database exists
     if not SHARED_DB.exists():
         console.print(f"[red]❌ Database not found at: {SHARED_DB}[/red]")
-        console.print("[yellow]Run main_mono.py first to create the database.[/yellow]")
+        console.print("[yellow]Run main.py first to create the database.[/yellow]")
+        return
+    
+    # Check for existing jobs first
+    if not check_existing_jobs():
         return
     
     picker = SmartSongPicker(db_path=str(SHARED_DB))
     stats = picker.get_database_stats()
     
     if stats['total_songs'] == 0:
-        console.print("[red]❌ Database is empty. Add songs first using main_mono.py[/red]")
+        console.print("[red]❌ Database is empty. Add songs first using main.py[/red]")
         return
     
     console.print(f"[dim]📊 Database: {SHARED_DB}[/dim]")
@@ -61,10 +102,8 @@ def main():
     
     console.print()
     
-    # Monkey-patch the input function to auto-provide song titles
-    song_index = [0]  # Use list to avoid closure issues
-    
-    # Handle both builtins module and __builtins__ dict
+    # Monkey-patch input to auto-provide song titles
+    song_index = [0]
     import builtins
     original_input = builtins.input
     
@@ -77,10 +116,8 @@ def main():
             console.print(f"{prompt}[auto] {song['song_title']}")
             return song['song_title']
         else:
-            # For any other prompts (shouldn't happen with cached songs)
             return original_input(prompt)
     
-    # Replace input function
     builtins.input = smart_input
     
     # Process jobs

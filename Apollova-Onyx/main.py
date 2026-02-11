@@ -7,6 +7,7 @@ NOTE: Onyx shares the nova_lyrics column with Mono for word-level transcription 
 """
 import os
 import json
+import shutil
 from pathlib import Path
 from rich.console import Console
 
@@ -142,7 +143,7 @@ def process_single_job(job_id):
         
         console.print("[cyan]Trimming audio...[/cyan]")
         try:
-            trimmed_path = trim_audio(audio_path, start_time, end_time, job_folder)
+            trimmed_path = trim_audio(job_folder, start_time, end_time)
         except Exception as e:
             console.print(f"[red]Failed to trim audio: {e}[/red]")
             return False
@@ -160,19 +161,17 @@ def process_single_job(job_id):
     if not stages["image_downloaded"]:
         console.print("[cyan]Downloading cover art...[/cyan]")
         try:
-            if cached_image_url:
-                image_path = download_image(cached_image_url, job_folder)
+            if cached_image_url and cached_image_url != "fetched_from_genius":
+                image_path = download_image(job_folder, cached_image_url)
                 genius_image_url = cached_image_url
             else:
-                # Try to get from Genius
-                from scripts.genius_processing import get_song_image_url
-                genius_image_url = get_song_image_url(song_title)
-                if genius_image_url:
-                    image_path = download_image(genius_image_url, job_folder)
-                else:
+                # Try to get from Genius - use the function that returns both path and URL
+                from scripts.genius_processing import fetch_genius_image_with_url
+                image_path, genius_image_url = fetch_genius_image_with_url(song_title, job_folder)
+                if not image_path:
                     console.print("[yellow]Could not find cover art automatically[/yellow]")
                     image_url = input(f"[Job {job_id}] Cover image URL: ").strip()
-                    image_path = download_image(image_url, job_folder)
+                    image_path = download_image(job_folder, image_url)
                     genius_image_url = image_url
         except Exception as e:
             console.print(f"[red]Failed to download image: {e}[/red]")
@@ -286,9 +285,51 @@ def process_single_job(job_id):
     return True
 
 
+def check_existing_jobs():
+    """Check if jobs folder already has completed jobs and offer to delete"""
+    jobs_dir = os.path.join(os.path.dirname(__file__), Config.JOBS_DIR)
+    
+    if not os.path.exists(jobs_dir):
+        return True  # No jobs folder, continue
+    
+    # Check for existing job folders
+    existing_jobs = []
+    for i in range(1, 13):
+        job_folder = os.path.join(jobs_dir, f"job_{i:03}")
+        job_data_path = os.path.join(job_folder, "job_data.json")
+        if os.path.exists(job_data_path):
+            existing_jobs.append(i)
+    
+    if not existing_jobs:
+        return True  # No completed jobs, continue
+    
+    console.print(f"[yellow]⚠️  Found {len(existing_jobs)} existing completed jobs in {jobs_dir}[/yellow]")
+    console.print(f"[dim]   Jobs: {', '.join(str(j) for j in existing_jobs)}[/dim]")
+    
+    response = input("\nDelete existing jobs and start fresh? (y/N): ").strip().lower()
+    
+    if response == 'y':
+        for i in range(1, 13):
+            job_folder = os.path.join(jobs_dir, f"job_{i:03}")
+            if os.path.exists(job_folder):
+                try:
+                    shutil.rmtree(job_folder)
+                    console.print(f"[dim]   Deleted job_{i:03}[/dim]")
+                except Exception as e:
+                    console.print(f"[red]   Failed to delete job_{i:03}: {e}[/red]")
+        console.print("[green]✓ Cleared existing jobs[/green]\n")
+        return True
+    else:
+        console.print("[yellow]Keeping existing jobs. Will skip completed ones.[/yellow]\n")
+        return True
+
+
 def batch_generate_jobs():
     """Generate all jobs with database caching"""
     console.print("\n[bold magenta]💿 Apollova Onyx - Music Video Automation[/bold magenta]\n")
+    
+    # Check for existing jobs first
+    check_existing_jobs()
     
     # Validate config
     Config.validate()

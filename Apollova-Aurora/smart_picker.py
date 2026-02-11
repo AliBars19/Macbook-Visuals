@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Smart Picker - Auto-select 12 songs and run them
-Zero manual input required for cached songs
+Smart Picker - Aurora Edition
+Auto-select 12 songs and run them with Aurora processing
 """
 import os
 import sys
+import shutil
 from pathlib import Path
 
 # Ensure this script can find local modules
@@ -12,15 +13,52 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from scripts.smart_picker import SmartSongPicker
 from scripts.song_database import SongDatabase
+from scripts.config import Config
 from main import process_single_job
 from rich.console import Console
 
 console = Console()
 
-# Shared database path (one level up from Apollova-Aurora)
-# Structure: Apollova/database/songs.db
-#           Apollova/Apollova-Aurora/smart_picker.py (this file)
+# Shared database path
 SHARED_DB = Path(__file__).parent.parent / "database" / "songs.db"
+
+
+def check_existing_jobs():
+    """Check if jobs folder already has completed jobs and offer to delete"""
+    jobs_dir = os.path.join(os.path.dirname(__file__), Config.JOBS_DIR)
+    
+    if not os.path.exists(jobs_dir):
+        return True
+    
+    existing_jobs = []
+    for i in range(1, 13):
+        job_folder = os.path.join(jobs_dir, f"job_{i:03}")
+        job_data_path = os.path.join(job_folder, "job_data.json")
+        if os.path.exists(job_data_path):
+            existing_jobs.append(i)
+    
+    if not existing_jobs:
+        return True
+    
+    console.print(f"[yellow]⚠️  Found {len(existing_jobs)} existing completed jobs[/yellow]")
+    console.print(f"[dim]   Jobs: {', '.join(str(j) for j in existing_jobs)}[/dim]")
+    
+    response = input("\nDelete existing jobs and start fresh? (y/N): ").strip().lower()
+    
+    if response == 'y':
+        for i in range(1, 13):
+            job_folder = os.path.join(jobs_dir, f"job_{i:03}")
+            if os.path.exists(job_folder):
+                try:
+                    shutil.rmtree(job_folder)
+                    console.print(f"[dim]   Deleted job_{i:03}[/dim]")
+                except Exception as e:
+                    console.print(f"[red]   Failed to delete job_{i:03}: {e}[/red]")
+        console.print("[green]✓ Cleared existing jobs[/green]\n")
+        return True
+    else:
+        console.print("[yellow]Cancelled.[/yellow]")
+        return False
 
 
 def main():
@@ -30,6 +68,10 @@ def main():
     if not SHARED_DB.exists():
         console.print(f"[red]❌ Database not found at: {SHARED_DB}[/red]")
         console.print("[yellow]Run main.py first to create the database.[/yellow]")
+        return
+    
+    # Check for existing jobs first
+    if not check_existing_jobs():
         return
     
     picker = SmartSongPicker(db_path=str(SHARED_DB))
@@ -54,17 +96,15 @@ def main():
         console.print(f"  {i:2}. {song['song_title']:<45} ({status})")
     
     console.print()
-    response = input("Run these jobs? (Y/n): ").strip().lower()
+    response = input("Run these Aurora jobs? (Y/n): ").strip().lower()
     if response == 'n':
         console.print("Cancelled.")
         return
     
     console.print()
     
-    # Monkey-patch the input function to auto-provide song titles
-    song_index = [0]  # Use list to avoid closure issues
-    
-    # Handle both builtins module and __builtins__ dict
+    # Monkey-patch input to auto-provide song titles
+    song_index = [0]
     import builtins
     original_input = builtins.input
     
@@ -77,10 +117,8 @@ def main():
             console.print(f"{prompt}[auto] {song['song_title']}")
             return song['song_title']
         else:
-            # For any other prompts (shouldn't happen with cached songs)
             return original_input(prompt)
     
-    # Replace input function
     builtins.input = smart_input
     
     # Process jobs
@@ -109,7 +147,7 @@ def main():
     console.print(f"Time: {elapsed:.1f}s")
     
     if successful == num_jobs:
-        console.print(f"\n[green]✅ All jobs ready![/green]")
+        console.print(f"\n[green]✅ All Aurora jobs ready![/green]")
         console.print("[cyan]Next step:[/cyan] Run the After Effects JSX script")
         console.print("[dim]File → Scripts → Run Script File... → scripts/JSX/automateMV_batch.jsx[/dim]\n")
 

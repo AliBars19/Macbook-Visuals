@@ -6,6 +6,7 @@ Minimal text-only lyric videos with word-by-word reveal
 import os
 import sys
 import json
+import shutil
 from pathlib import Path
 from rich.console import Console
 
@@ -19,9 +20,7 @@ from scripts.song_database import SongDatabase
 
 console = Console()
 
-# Initialize song database with shared path (one level up from Apollova-Mono)
-# Structure: Apollova/database/songs.db
-#           Apollova/Apollova-Mono/main.py (this file)
+# Initialize song database with shared path
 SHARED_DB = Path(__file__).parent.parent / "database" / "songs.db"
 song_db = SongDatabase(db_path=str(SHARED_DB))
 
@@ -35,7 +34,6 @@ def check_job_progress(job_folder):
         "job_complete": os.path.exists(os.path.join(job_folder, "job_data.json"))
     }
     
-    # Load existing job data if available
     job_data = {}
     json_path = os.path.join(job_folder, "job_data.json")
     if os.path.exists(json_path):
@@ -48,9 +46,46 @@ def check_job_progress(job_folder):
     return stages, job_data
 
 
+def check_existing_jobs():
+    """Check if jobs folder already has completed jobs and offer to delete"""
+    jobs_dir = os.path.join(os.path.dirname(__file__), "jobs")
+    
+    if not os.path.exists(jobs_dir):
+        return True
+    
+    existing_jobs = []
+    for i in range(1, 13):
+        job_folder = os.path.join(jobs_dir, f"job_{i:03}")
+        job_data_path = os.path.join(job_folder, "job_data.json")
+        if os.path.exists(job_data_path):
+            existing_jobs.append(i)
+    
+    if not existing_jobs:
+        return True
+    
+    console.print(f"[yellow]⚠️  Found {len(existing_jobs)} existing completed jobs in {jobs_dir}[/yellow]")
+    console.print(f"[dim]   Jobs: {', '.join(str(j) for j in existing_jobs)}[/dim]")
+    
+    response = input("\nDelete existing jobs and start fresh? (y/N): ").strip().lower()
+    
+    if response == 'y':
+        for i in range(1, 13):
+            job_folder = os.path.join(jobs_dir, f"job_{i:03}")
+            if os.path.exists(job_folder):
+                try:
+                    shutil.rmtree(job_folder)
+                    console.print(f"[dim]   Deleted job_{i:03}[/dim]")
+                except Exception as e:
+                    console.print(f"[red]   Failed to delete job_{i:03}: {e}[/red]")
+        console.print("[green]✓ Cleared existing jobs[/green]\n")
+        return True
+    else:
+        console.print("[yellow]Keeping existing jobs. Will skip completed ones.[/yellow]\n")
+        return True
+
+
 def process_single_job(job_id):
     """Process a single job for Mono (minimal text-only style)"""
-    # Jobs folder is local to this project
     job_folder = os.path.join(os.path.dirname(__file__), "jobs", f"job_{job_id:03}")
     os.makedirs(job_folder, exist_ok=True)
     
@@ -58,7 +93,7 @@ def process_single_job(job_id):
     
     stages, job_data = check_job_progress(job_folder)
     
-    # === Check if job is already complete ===
+    # Check if job is already complete
     if stages["job_complete"] and all([
         stages["audio_downloaded"],
         stages["audio_trimmed"],
@@ -68,31 +103,30 @@ def process_single_job(job_id):
         console.print(f"[green]✓ Job {job_id:03} already complete: {song_title}[/green]")
         return True
     
-    # === Get Song Title FIRST ===
+    # Get Song Title
     song_title = job_data.get("song_title")
     if not song_title:
         song_title = input(f"[Job {job_id}] Song Title (Artist - Song): ").strip()
     else:
         console.print(f"[dim]Song: {song_title}[/dim]")
     
-    # === Check Database for Cached Parameters ===
+    # Check Database for Cached Parameters
     cached_song = song_db.get_song(song_title)
-    
-    # Check for Mono-specific cached lyrics (separate from Aurora)
-    cached_mono_lyrics = song_db.get_mono_lyrics(song_title)
+    cached_mono_lyrics = None
     
     if cached_song:
-        console.print(f"[green]✓ Found '{song_title}' in database! Loading cached parameters...[/green]")
-        
-        # Use cached parameters
+        console.print(f"[green]✓ Found '{song_title}' in database![/green]")
         audio_url = cached_song["youtube_url"]
         start_time = cached_song["start_time"]
         end_time = cached_song["end_time"]
         
+        # Get Mono-specific lyrics (word-level) from nova_lyrics column
+        cached_mono_lyrics = song_db.get_nova_lyrics(song_title)
+        
         console.print(f"[dim]  URL: {audio_url}[/dim]")
         console.print(f"[dim]  Time: {start_time} → {end_time}[/dim]")
         if cached_mono_lyrics:
-            console.print(f"[dim]  Cached Mono lyrics: {len(cached_mono_lyrics)} markers ⚡[/dim]")
+            console.print(f"[dim]  Cached word-level lyrics: {len(cached_mono_lyrics.get('markers', []))} markers ⚡[/dim]")
     else:
         console.print(f"[yellow]'{song_title}' not in database. Creating new entry...[/yellow]")
     
@@ -104,7 +138,7 @@ def process_single_job(job_id):
         else:
             audio_url = input(f"[Job {job_id}] Audio URL: ").strip()
         
-        console.print("[magenta]Downloading audio...[/magenta]")
+        console.print("[cyan]Downloading audio...[/cyan]")
         try:
             audio_path = download_audio(audio_url, job_folder)
         except Exception as e:
@@ -137,7 +171,7 @@ def process_single_job(job_id):
             else:
                 end_time = input(f"[Job {job_id}] End time (MM:SS): ").strip()
         
-        console.print("[magenta]Trimming audio...[/magenta]")
+        console.print("[cyan]Trimming audio...[/cyan]")
         try:
             trimmed_path = trim_audio(job_folder, start_time, end_time)
         except Exception as e:
@@ -153,63 +187,52 @@ def process_single_job(job_id):
             start_time = job_data.get("start_time", "00:00")
             end_time = job_data.get("end_time", "01:01")
     
-    # === Mono Transcription (Word-Level Timestamps) ===
+    # === Mono Data Generation (Word-level transcription) ===
     mono_data_path = os.path.join(job_folder, "mono_data.json")
     
-    # Check if we have cached Mono lyrics
-    if cached_mono_lyrics:
-        console.print(f"[green]✓ Using cached Mono lyrics ({len(cached_mono_lyrics)} markers) ⚡[/green]")
-        mono_data = {"markers": cached_mono_lyrics, "total_markers": len(cached_mono_lyrics)}
-        with open(mono_data_path, "w", encoding="utf-8") as f:
-            json.dump(mono_data, f, indent=4, ensure_ascii=False)
+    if cached_mono_lyrics and cached_mono_lyrics.get("markers"):
+        console.print(f"[green]⚡ Using cached word-level lyrics ({len(cached_mono_lyrics.get('markers', []))} markers)[/green]")
         transcribed_lyrics = cached_mono_lyrics
+        with open(mono_data_path, "w", encoding="utf-8") as f:
+            json.dump(transcribed_lyrics, f, indent=4, ensure_ascii=False)
     elif not stages["mono_data_generated"]:
-        console.print("[magenta]Transcribing with word-level timestamps...[/magenta]")
+        console.print("[cyan]Transcribing with word-level timestamps...[/cyan]")
         try:
-            mono_data = transcribe_audio_mono(job_folder, song_title)
-            
-            # Save mono_data.json
+            transcribed_lyrics = transcribe_audio_mono(job_folder, song_title)
             with open(mono_data_path, "w", encoding="utf-8") as f:
-                json.dump(mono_data, f, indent=4, ensure_ascii=False)
-            
-            transcribed_lyrics = mono_data.get("markers", [])
-            console.print(f"[green]✓ Mono data generated: {len(transcribed_lyrics)} markers[/green]")
-            
+                json.dump(transcribed_lyrics, f, indent=4, ensure_ascii=False)
         except Exception as e:
-            console.print(f"[red]Failed to generate Mono data: {e}[/red]")
-            import traceback
-            traceback.print_exc()
-            return False
+            console.print(f"[yellow]Warning: Transcription failed: {e}[/yellow]")
+            transcribed_lyrics = {"markers": [], "total_markers": 0}
+            with open(mono_data_path, "w", encoding="utf-8") as f:
+                json.dump(transcribed_lyrics, f)
     else:
         with open(mono_data_path, "r", encoding="utf-8") as f:
-            mono_data = json.load(f)
-        transcribed_lyrics = mono_data.get("markers", [])
-        console.print(f"✓ Mono data already generated ({len(transcribed_lyrics)} markers)")
+            transcribed_lyrics = json.load(f)
+        console.print("✓ Mono data already generated")
     
     # === Save to Database ===
     if not cached_song:
-        console.print(f"[magenta]💾 Saving '{song_title}' to database...[/magenta]")
+        console.print(f"[cyan]💾 Saving '{song_title}' to database...[/cyan]")
         song_db.add_song(
             song_title=song_title,
             youtube_url=audio_url,
             start_time=start_time,
             end_time=end_time,
-            genius_image_url=None,  # Mono doesn't use images
-            transcribed_lyrics=None,  # Don't touch Aurora's column!
-            colors=None,  # Mono doesn't use colors from images
-            beats=None    # Mono doesn't use beat detection
+            genius_image_url=None,
+            transcribed_lyrics=None,  # Don't overwrite Aurora's lyrics
+            colors=None,
+            beats=None
         )
-        # Save Mono lyrics to separate column
-        if transcribed_lyrics:
-            song_db.update_mono_lyrics(song_title, transcribed_lyrics)
         console.print("[green]✓ Song saved to database for future use[/green]")
     else:
         song_db.mark_song_used(song_title)
         console.print(f"[green]✓ Marked '{song_title}' as used in database[/green]")
-        
-        # Update Mono lyrics if we generated new ones (don't touch Aurora's column)
-        if transcribed_lyrics and not cached_mono_lyrics:
-            song_db.update_mono_lyrics(song_title, transcribed_lyrics)
+    
+    # Save Mono lyrics to nova_lyrics column (shared with Onyx)
+    if transcribed_lyrics and transcribed_lyrics.get("markers"):
+        song_db.update_nova_lyrics(song_title, transcribed_lyrics)
+        console.print("[green]✓ Word-level lyrics saved to database (nova_lyrics)[/green]")
     
     # === Save Job Data ===
     job_data = {
@@ -222,7 +245,7 @@ def process_single_job(job_id):
         "youtube_url": audio_url,
         "start_time": start_time,
         "end_time": end_time,
-        "marker_count": len(transcribed_lyrics)
+        "marker_count": len(transcribed_lyrics.get("markers", []))
     }
     
     json_path = os.path.join(job_folder, "job_data.json")
@@ -235,14 +258,17 @@ def process_single_job(job_id):
 
 def batch_generate_jobs():
     """Generate all Mono jobs with database caching"""
-    console.print("\n[bold magenta]🎬 Music Video Automation - Apollova Mono[/bold magenta]")
+    console.print("\n[bold magenta]🎬 Apollova Mono - Music Video Automation[/bold magenta]")
     console.print("[dim]Minimal text-only lyric videos[/dim]\n")
+    
+    # Check for existing jobs first
+    check_existing_jobs()
     
     # Validate config
     Config.validate()
     
-    # Create jobs directory (local to this project)
-    jobs_dir = os.path.join(os.path.dirname(__file__), Config.JOBS_DIR)
+    # Create jobs directory
+    jobs_dir = os.path.join(os.path.dirname(__file__), "jobs")
     os.makedirs(jobs_dir, exist_ok=True)
     
     # Show database stats
@@ -250,7 +276,7 @@ def batch_generate_jobs():
     console.print(f"[dim]📊 Database: {SHARED_DB}[/dim]")
     if stats["total_songs"] > 0:
         console.print(f"[dim]   {stats['total_songs']} songs, "
-                     f"{stats['cached_lyrics']} with cached Aurora lyrics[/dim]\n")
+                     f"{stats.get('cached_nova_lyrics', 0)} with cached word-level lyrics[/dim]\n")
     
     # Process each job
     total_jobs = Config.TOTAL_JOBS
@@ -267,7 +293,7 @@ def batch_generate_jobs():
     stats = song_db.get_stats()
     console.print(f"\n[magenta]📊 Database now has:[/magenta]")
     console.print(f"   {stats['total_songs']} songs")
-    console.print(f"   {stats['cached_lyrics']} with cached Aurora lyrics")
+    console.print(f"   {stats.get('cached_nova_lyrics', 0)} with cached word-level lyrics")
     console.print(f"   {stats['total_uses']} total uses")
     
     console.print("\n[magenta]Next step:[/magenta] Run the After Effects JSX script")

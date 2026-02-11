@@ -28,8 +28,7 @@ class SongDatabase:
                 end_time TEXT NOT NULL,
                 genius_image_url TEXT,
                 transcribed_lyrics TEXT,
-                onyx_lyrics TEXT,
-                onyx_lyrics TEXT,
+                nova_lyrics TEXT,
                 colors TEXT,
                 beats TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -38,15 +37,9 @@ class SongDatabase:
             )
         """)
         
-        # Add onyx_lyrics column if it doesn't exist (for existing databases)
+        # Add nova_lyrics column if it doesn't exist (for existing databases)
         try:
-            cursor.execute("ALTER TABLE songs ADD COLUMN onyx_lyrics TEXT")
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-        
-        # Add onyx_lyrics column if it doesn't exist
-        try:
-            cursor.execute("ALTER TABLE songs ADD COLUMN onyx_lyrics TEXT")
+            cursor.execute("ALTER TABLE songs ADD COLUMN nova_lyrics TEXT")
         except sqlite3.OperationalError:
             pass  # Column already exists
         
@@ -84,13 +77,16 @@ class SongDatabase:
             "beats": json.loads(row[6]) if row[6] else None
         }
     
-    def get_onyx_lyrics(self, song_title):
-        """Get Onyx-specific lyrics (word-level timestamps)"""
+    def get_nova_lyrics(self, song_title):
+        """
+        Get Nova/Mono/Onyx word-level lyrics (shared column)
+        Returns dict with markers array or None if not found
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT onyx_lyrics FROM songs 
+            SELECT nova_lyrics FROM songs 
             WHERE LOWER(song_title) = LOWER(?)
         """, (song_title,))
         
@@ -102,50 +98,18 @@ class SongDatabase:
         
         return json.loads(row[0])
     
-    def update_onyx_lyrics(self, song_title, onyx_lyrics):
-        """Update Onyx-specific lyrics"""
+    def update_nova_lyrics(self, song_title, nova_lyrics):
+        """
+        Update Nova/Mono/Onyx word-level lyrics (shared column)
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        lyrics_json = json.dumps(onyx_lyrics) if onyx_lyrics else None
+        lyrics_json = json.dumps(nova_lyrics) if nova_lyrics else None
         
         cursor.execute("""
             UPDATE songs 
-            SET onyx_lyrics = ?, last_used = CURRENT_TIMESTAMP
-            WHERE LOWER(song_title) = LOWER(?)
-        """, (lyrics_json, song_title))
-        
-        conn.commit()
-        conn.close()
-    
-    def get_onyx_lyrics(self, song_title):
-        """Get Onyx-specific lyrics (word-level timestamps with colors)"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT onyx_lyrics FROM songs 
-            WHERE LOWER(song_title) = LOWER(?)
-        """, (song_title,))
-        
-        row = cursor.fetchone()
-        conn.close()
-        
-        if not row or not row[0]:
-            return None
-        
-        return json.loads(row[0])
-    
-    def update_onyx_lyrics(self, song_title, onyx_lyrics):
-        """Update Onyx-specific lyrics"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        lyrics_json = json.dumps(onyx_lyrics) if onyx_lyrics else None
-        
-        cursor.execute("""
-            UPDATE songs 
-            SET onyx_lyrics = ?, last_used = CURRENT_TIMESTAMP
+            SET nova_lyrics = ?, last_used = CURRENT_TIMESTAMP
             WHERE LOWER(song_title) = LOWER(?)
         """, (lyrics_json, song_title))
         
@@ -204,7 +168,7 @@ class SongDatabase:
         conn.close()
     
     def update_lyrics(self, song_title, transcribed_lyrics):
-        """Update transcribed lyrics for a song (Aurora)"""
+        """Update transcribed lyrics for a song (Aurora - line-by-line)"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -294,11 +258,11 @@ class SongDatabase:
             WHERE LOWER(song_title) = LOWER(?)
         """, (song_title,))
         
-        deleted_count = cursor.rowcount
+        deleted = cursor.rowcount > 0
         conn.commit()
         conn.close()
         
-        return deleted_count > 0
+        return deleted
     
     def get_stats(self):
         """Get database statistics"""
@@ -311,6 +275,9 @@ class SongDatabase:
         cursor.execute("SELECT COUNT(*) FROM songs WHERE transcribed_lyrics IS NOT NULL")
         cached_lyrics = cursor.fetchone()[0]
         
+        cursor.execute("SELECT COUNT(*) FROM songs WHERE nova_lyrics IS NOT NULL")
+        cached_nova = cursor.fetchone()[0]
+        
         cursor.execute("SELECT SUM(use_count) FROM songs")
         total_uses = cursor.fetchone()[0] or 0
         
@@ -319,5 +286,6 @@ class SongDatabase:
         return {
             "total_songs": total_songs,
             "cached_lyrics": cached_lyrics,
+            "cached_nova_lyrics": cached_nova,
             "total_uses": total_uses
         }
