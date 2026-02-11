@@ -46,7 +46,7 @@ function main() {
 
     clearAllJobComps();
 
-    var jobsFolder = Folder.selectDialog("Select your /jobs folder (Visuals-Nova/jobs)");
+    var jobsFolder = Folder.selectDialog("Select your /jobs folder (Visuals-Mono/jobs)");
     if (!jobsFolder) return;
 
     var subfolders = jobsFolder.getFiles(function (f) { return f instanceof Folder; });
@@ -54,7 +54,7 @@ function main() {
     
     for (var i = 0; i < subfolders.length; i++) {
         // Look for nova_data.json in each job folder
-        var files = subfolders[i].getFiles("nova_data.json");
+        var files = subfolders[i].getFiles("mono_data.json");
         if (files && files.length > 0) {
             jsonFiles.push(files[0]);
         }
