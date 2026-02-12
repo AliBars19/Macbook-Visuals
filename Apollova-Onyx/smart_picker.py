@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from scripts.smart_picker import SmartSongPicker
 from scripts.song_database import SongDatabase
-from main_onyx import process_single_job
+from main import process_single_job
 from rich.console import Console
 
 console = Console()
