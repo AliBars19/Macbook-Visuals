@@ -1,3 +1,7 @@
+"""
+Image Processing - Download, resize, crop, and color extraction
+Shared across Aurora and Onyx templates (Mono doesn't use images)
+"""
 import os
 import requests
 from PIL import Image
@@ -6,23 +10,18 @@ from colorthief import ColorThief
 
 
 def download_image(job_folder, url, max_retries=3):
+    """Download and process cover image from URL"""
     image_path = os.path.join(job_folder, "cover.png")
     
     for attempt in range(max_retries):
         try:
-            # Download image
             response = requests.get(url, timeout=10)
             
             if response.status_code != 200:
                 raise Exception(f"HTTP {response.status_code}")
             
-            # Load and convert to RGB
             img = Image.open(BytesIO(response.content)).convert("RGB")
-            
-            # Resize and crop to 700x700
             img = resize_and_crop(img, target_size=700)
-            
-            # Save
             img.save(image_path, format="PNG", optimize=True)
             
             print(f"✓ Image downloaded and processed")
@@ -39,16 +38,15 @@ def download_image(job_folder, url, max_retries=3):
 
 
 def resize_and_crop(img, target_size=700):
+    """Resize and center-crop image to target_size x target_size"""
     w, h = img.size
     
-    # Scale so smallest dimension = target
     scale = target_size / min(w, h)
     new_w = int(w * scale)
     new_h = int(h * scale)
     
     img = img.resize((new_w, new_h), Image.LANCZOS)
     
-    # Center crop
     left = (new_w - target_size) // 2
     top = (new_h - target_size) // 2
     right = left + target_size
@@ -58,6 +56,7 @@ def resize_and_crop(img, target_size=700):
 
 
 def extract_colors(job_folder, color_count=2):
+    """Extract dominant colors from cover image"""
     image_path = os.path.join(job_folder, 'cover.png')
     
     if not os.path.exists(image_path):
@@ -65,11 +64,9 @@ def extract_colors(job_folder, color_count=2):
         return []
     
     try:
-        # Extract palette
         color_thief = ColorThief(image_path)
         palette = color_thief.get_palette(color_count=color_count)
         
-        # Convert RGB to hex
         colors_hex = [
             f'#{r:02x}{g:02x}{b:02x}'
             for r, g, b in palette
@@ -80,5 +77,4 @@ def extract_colors(job_folder, color_count=2):
         
     except Exception as e:
         print(f"❌ Color extraction failed: {e}")
-        # Return default colors as fallback
         return ['#ff5733', '#33ff57']

@@ -1,15 +1,26 @@
-"""Song database for caching parameters and lyrics"""
+"""
+Song Database - SQLite caching for song parameters and transcriptions
+Shared across Aurora, Mono, and Onyx templates
+
+Each template has its own lyrics column:
+  - transcribed_lyrics  → Aurora (line-by-line segments)
+  - mono_lyrics         → Mono (word-level markers)
+  - onyx_lyrics         → Onyx (word-level markers + colors)
+"""
 import sqlite3
 import json
 import os
-from datetime import datetime
 from pathlib import Path
 
 
 class SongDatabase:
     """SQLite database for caching song parameters and transcriptions"""
     
-    def __init__(self, db_path="database/songs.db"):
+    def __init__(self, db_path=None):
+        if db_path is None:
+            # Default: shared database one level up from scripts/
+            db_path = str(Path(__file__).parent.parent / "database" / "songs.db")
+        
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.init_database()
@@ -28,7 +39,8 @@ class SongDatabase:
                 end_time TEXT NOT NULL,
                 genius_image_url TEXT,
                 transcribed_lyrics TEXT,
-                nova_lyrics TEXT,
+                mono_lyrics TEXT,
+                onyx_lyrics TEXT,
                 colors TEXT,
                 beats TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -37,20 +49,22 @@ class SongDatabase:
             )
         """)
         
-        # Add nova_lyrics column if it doesn't exist (for existing databases)
-        try:
-            cursor.execute("ALTER TABLE songs ADD COLUMN nova_lyrics TEXT")
-        except sqlite3.OperationalError:
-            pass  # Column already exists
+        # Add columns if they don't exist (for existing databases)
+        for col in ["mono_lyrics", "onyx_lyrics"]:
+            try:
+                cursor.execute(f"ALTER TABLE songs ADD COLUMN {col} TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
         
         conn.commit()
         conn.close()
     
+    # ========================================================================
+    # CORE CRUD
+    # ========================================================================
+    
     def get_song(self, song_title):
-        """
-        Get song parameters from database
-        Returns dict with all parameters or None if not found
-        """
+        """Get song parameters from database (shared fields only)"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -77,54 +91,12 @@ class SongDatabase:
             "beats": json.loads(row[6]) if row[6] else None
         }
     
-    def get_nova_lyrics(self, song_title):
-        """
-        Get Nova/Mono/Onyx word-level lyrics (shared column)
-        Returns dict with markers array or None if not found
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT nova_lyrics FROM songs 
-            WHERE LOWER(song_title) = LOWER(?)
-        """, (song_title,))
-        
-        row = cursor.fetchone()
-        conn.close()
-        
-        if not row or not row[0]:
-            return None
-        
-        return json.loads(row[0])
-    
-    def update_nova_lyrics(self, song_title, nova_lyrics):
-        """
-        Update Nova/Mono/Onyx word-level lyrics (shared column)
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        lyrics_json = json.dumps(nova_lyrics) if nova_lyrics else None
-        
-        cursor.execute("""
-            UPDATE songs 
-            SET nova_lyrics = ?, last_used = CURRENT_TIMESTAMP
-            WHERE LOWER(song_title) = LOWER(?)
-        """, (lyrics_json, song_title))
-        
-        conn.commit()
-        conn.close()
-    
-    def add_song(self, song_title, youtube_url, start_time, end_time, 
+    def add_song(self, song_title, youtube_url, start_time, end_time,
                  genius_image_url=None, transcribed_lyrics=None, colors=None, beats=None):
-        """
-        Add new song to database or update if exists
-        """
+        """Add new song or update existing (COALESCE preserves existing data)"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Convert lists/dicts to JSON strings
         lyrics_json = json.dumps(transcribed_lyrics) if transcribed_lyrics else None
         colors_json = json.dumps(colors) if colors else None
         beats_json = json.dumps(beats) if beats else None
@@ -137,23 +109,20 @@ class SongDatabase:
                 youtube_url = excluded.youtube_url,
                 start_time = excluded.start_time,
                 end_time = excluded.end_time,
-                genius_image_url = excluded.genius_image_url,
+                genius_image_url = COALESCE(excluded.genius_image_url, genius_image_url),
                 transcribed_lyrics = COALESCE(excluded.transcribed_lyrics, transcribed_lyrics),
-                colors = excluded.colors,
-                beats = excluded.beats,
+                colors = COALESCE(excluded.colors, colors),
+                beats = COALESCE(excluded.beats, beats),
                 last_used = CURRENT_TIMESTAMP,
                 use_count = use_count + 1
-        """, (song_title, youtube_url, start_time, end_time, 
+        """, (song_title, youtube_url, start_time, end_time,
               genius_image_url, lyrics_json, colors_json, beats_json))
         
         conn.commit()
         conn.close()
     
     def mark_song_used(self, song_title):
-        """
-        Mark a song as used (increment use_count and update last_used)
-        Use this when loading cached data without updating the data itself
-        """
+        """Increment use_count and update last_used timestamp"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -167,12 +136,16 @@ class SongDatabase:
         conn.commit()
         conn.close()
     
+    # ========================================================================
+    # AURORA-SPECIFIC LYRICS
+    # ========================================================================
+    
     def update_lyrics(self, song_title, transcribed_lyrics):
-        """Update transcribed lyrics for a song (Aurora - line-by-line)"""
+        """Update Aurora transcribed_lyrics column"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        lyrics_json = json.dumps(transcribed_lyrics)
+        lyrics_json = json.dumps(transcribed_lyrics) if transcribed_lyrics else None
         
         cursor.execute("""
             UPDATE songs 
@@ -183,8 +156,88 @@ class SongDatabase:
         conn.commit()
         conn.close()
     
+    # ========================================================================
+    # MONO-SPECIFIC LYRICS
+    # ========================================================================
+    
+    def get_mono_lyrics(self, song_title):
+        """Get Mono-format lyrics (word-level timestamps)"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT mono_lyrics FROM songs 
+            WHERE LOWER(song_title) = LOWER(?)
+        """, (song_title,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row or not row[0]:
+            return None
+        
+        return json.loads(row[0])
+    
+    def update_mono_lyrics(self, song_title, mono_lyrics):
+        """Update Mono-format lyrics"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        lyrics_json = json.dumps(mono_lyrics) if mono_lyrics else None
+        
+        cursor.execute("""
+            UPDATE songs 
+            SET mono_lyrics = ?, last_used = CURRENT_TIMESTAMP
+            WHERE LOWER(song_title) = LOWER(?)
+        """, (lyrics_json, song_title))
+        
+        conn.commit()
+        conn.close()
+    
+    # ========================================================================
+    # ONYX-SPECIFIC LYRICS
+    # ========================================================================
+    
+    def get_onyx_lyrics(self, song_title):
+        """Get Onyx-format lyrics (word-level timestamps + colors)"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT onyx_lyrics FROM songs 
+            WHERE LOWER(song_title) = LOWER(?)
+        """, (song_title,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row or not row[0]:
+            return None
+        
+        return json.loads(row[0])
+    
+    def update_onyx_lyrics(self, song_title, onyx_lyrics):
+        """Update Onyx-format lyrics"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        lyrics_json = json.dumps(onyx_lyrics) if onyx_lyrics else None
+        
+        cursor.execute("""
+            UPDATE songs 
+            SET onyx_lyrics = ?, last_used = CURRENT_TIMESTAMP
+            WHERE LOWER(song_title) = LOWER(?)
+        """, (lyrics_json, song_title))
+        
+        conn.commit()
+        conn.close()
+    
+    # ========================================================================
+    # SHARED FIELD UPDATES
+    # ========================================================================
+    
     def update_image_url(self, song_title, genius_image_url):
-        """Update Genius image URL for a song"""
+        """Update Genius image URL"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -198,7 +251,7 @@ class SongDatabase:
         conn.close()
     
     def update_colors_and_beats(self, song_title, colors, beats):
-        """Update colors and beats for a song"""
+        """Update colors and beats"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -214,8 +267,12 @@ class SongDatabase:
         conn.commit()
         conn.close()
     
+    # ========================================================================
+    # QUERIES
+    # ========================================================================
+    
     def list_all_songs(self):
-        """Get list of all songs in database"""
+        """Get list of all songs ordered by last used"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
@@ -227,7 +284,6 @@ class SongDatabase:
         
         songs = cursor.fetchall()
         conn.close()
-        
         return songs
     
     def search_songs(self, query):
@@ -245,7 +301,6 @@ class SongDatabase:
         
         songs = cursor.fetchall()
         conn.close()
-        
         return songs
     
     def delete_song(self, song_title):
@@ -261,7 +316,6 @@ class SongDatabase:
         deleted = cursor.rowcount > 0
         conn.commit()
         conn.close()
-        
         return deleted
     
     def get_stats(self):
@@ -275,9 +329,6 @@ class SongDatabase:
         cursor.execute("SELECT COUNT(*) FROM songs WHERE transcribed_lyrics IS NOT NULL")
         cached_lyrics = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(*) FROM songs WHERE nova_lyrics IS NOT NULL")
-        cached_nova = cursor.fetchone()[0]
-        
         cursor.execute("SELECT SUM(use_count) FROM songs")
         total_uses = cursor.fetchone()[0] or 0
         
@@ -286,6 +337,5 @@ class SongDatabase:
         return {
             "total_songs": total_songs,
             "cached_lyrics": cached_lyrics,
-            "cached_nova_lyrics": cached_nova,
             "total_uses": total_uses
         }
