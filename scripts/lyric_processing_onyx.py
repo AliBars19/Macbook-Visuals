@@ -16,8 +16,15 @@ Output: markers with {time, text, words[], color, end_time}
 import os
 import json
 import re
+import gc
 from pydub import AudioSegment
 from stable_whisper import load_model
+
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 
 from scripts.config import Config
 from scripts.genius_processing import fetch_genius_lyrics
@@ -44,19 +51,12 @@ def transcribe_audio_onyx(job_folder, song_title=None):
         audio_duration = _get_audio_duration(audio_path)
         print(f"  Audio duration: {audio_duration:.1f}s")
         
-        os.makedirs(Config.WHISPER_CACHE_DIR, exist_ok=True)
-        model = load_model(
-            Config.WHISPER_MODEL,
-            download_root=Config.WHISPER_CACHE_DIR,
-            in_memory=False
-        )
-        
         initial_prompt = _build_initial_prompt(song_title)
         
         # ============================================================
         # MULTI-PASS TRANSCRIPTION
         # ============================================================
-        result = _multi_pass_transcribe(model, audio_path, initial_prompt, audio_duration)
+        result = _multi_pass_transcribe(audio_path, initial_prompt, audio_duration)
         
         if not result or not result.segments:
             print("❌ Whisper returned no segments after all attempts")
@@ -138,8 +138,8 @@ def transcribe_audio_onyx(job_folder, song_title=None):
 # MULTI-PASS WHISPER
 # ============================================================================
 
-def _multi_pass_transcribe(model, audio_path, initial_prompt, audio_duration):
-    """Try multiple Whisper configs. Onyx uses regroup=False so we can manually split."""
+def _multi_pass_transcribe(audio_path, initial_prompt, audio_duration):
+    """Try multiple Whisper configs with VRAM management. Onyx uses regroup=False for manual split."""
     min_expected = max(2, int(audio_duration / 3.5))
     
     passes = [
@@ -183,35 +183,97 @@ def _multi_pass_transcribe(model, audio_path, initial_prompt, audio_duration):
     
     best_result = None
     best_count = 0
+    model = None
+    used_cpu_fallback = False
     
-    for p in passes:
-        try:
-            print(f"  {p['name']}...")
-            result = model.transcribe(audio_path, **p["params"])
-            
-            if not result or not result.segments:
-                print(f"    → 0 segments")
+    try:
+        model = _load_whisper_model()
+        
+        for p in passes:
+            try:
+                _clear_vram()
+                print(f"  {p['name']}...")
+                result = model.transcribe(audio_path, **p["params"])
+                
+                if not result or not result.segments:
+                    print(f"    → 0 segments")
+                    continue
+                
+                count = sum(1 for s in result.segments if s.text.strip() and len(s.text.strip()) > 1)
+                print(f"    → {count} segments")
+                
+                if count > best_count:
+                    best_count = count
+                    best_result = result
+                
+                if count >= min_expected:
+                    print(f"    ✓ Sufficient ({count} ≥ {min_expected} expected)")
+                    return result
+                
+            except RuntimeError as e:
+                if "CUDA out of memory" in str(e) and not used_cpu_fallback:
+                    print(f"    ⚠ GPU OOM — switching to CPU...")
+                    del model
+                    model = None
+                    _clear_vram()
+                    model = _load_whisper_model(force_cpu=True)
+                    used_cpu_fallback = True
+                    try:
+                        result = model.transcribe(audio_path, **p["params"])
+                        if result and result.segments:
+                            count = sum(1 for s in result.segments if s.text.strip() and len(s.text.strip()) > 1)
+                            print(f"    → {count} segments (CPU)")
+                            if count > best_count:
+                                best_count = count
+                                best_result = result
+                            if count >= min_expected:
+                                return result
+                    except Exception as cpu_e:
+                        print(f"    → CPU fallback failed: {cpu_e}")
+                else:
+                    print(f"    → Error: {e}")
+                    continue
+            except Exception as e:
+                print(f"    → Error: {e}")
                 continue
-            
-            count = sum(1 for s in result.segments if s.text.strip() and len(s.text.strip()) > 1)
-            print(f"    → {count} segments")
-            
-            if count > best_count:
-                best_count = count
-                best_result = result
-            
-            if count >= min_expected:
-                print(f"    ✓ Sufficient ({count} ≥ {min_expected} expected)")
-                return result
-            
-        except Exception as e:
-            print(f"    → Error: {e}")
-            continue
+        
+        if best_result:
+            print(f"  ⚠ Best: {best_count} segments (wanted {min_expected}+)")
+        
+        return best_result
     
-    if best_result:
-        print(f"  ⚠ Best: {best_count} segments (wanted {min_expected}+)")
+    finally:
+        if model is not None:
+            del model
+        _clear_vram()
+
+
+def _load_whisper_model(force_cpu=False):
+    """Load Whisper model. Optionally force CPU to avoid OOM."""
+    os.makedirs(Config.WHISPER_CACHE_DIR, exist_ok=True)
     
-    return best_result
+    if force_cpu and HAS_TORCH:
+        original_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        try:
+            print(f"  Loading {Config.WHISPER_MODEL} on CPU...")
+            model = load_model(Config.WHISPER_MODEL, download_root=Config.WHISPER_CACHE_DIR, in_memory=False)
+        finally:
+            if original_visible is not None:
+                os.environ["CUDA_VISIBLE_DEVICES"] = original_visible
+            else:
+                os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        return model
+    
+    return load_model(Config.WHISPER_MODEL, download_root=Config.WHISPER_CACHE_DIR, in_memory=False)
+
+
+def _clear_vram():
+    """Clear GPU memory."""
+    gc.collect()
+    if HAS_TORCH and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
 
 
 # ============================================================================

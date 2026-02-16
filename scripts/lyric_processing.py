@@ -16,8 +16,15 @@ Bulletproof features:
 import os
 import json
 import re
+import gc
 from pydub import AudioSegment
 from stable_whisper import load_model
+
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 
 from scripts.config import Config
 from scripts.genius_processing import fetch_genius_lyrics
@@ -42,21 +49,13 @@ def transcribe_audio(job_folder, song_title=None):
         audio_duration = _get_audio_duration(audio_path)
         print(f"  Audio duration: {audio_duration:.1f}s")
         
-        # Load model
-        os.makedirs(Config.WHISPER_CACHE_DIR, exist_ok=True)
-        model = load_model(
-            Config.WHISPER_MODEL,
-            download_root=Config.WHISPER_CACHE_DIR,
-            in_memory=False
-        )
-        
         # Build context prompt
         initial_prompt = _build_initial_prompt(song_title)
         
         # ============================================================
-        # MULTI-PASS TRANSCRIPTION
+        # MULTI-PASS TRANSCRIPTION (with VRAM management)
         # ============================================================
-        result = _multi_pass_transcribe(model, audio_path, initial_prompt, audio_duration)
+        result = _multi_pass_transcribe(audio_path, initial_prompt, audio_duration)
         
         if not result or not result.segments:
             print("❌ Whisper returned no segments after all attempts")
@@ -157,19 +156,21 @@ def transcribe_audio(job_folder, song_title=None):
 # MULTI-PASS WHISPER TRANSCRIPTION
 # ============================================================================
 
-def _multi_pass_transcribe(model, audio_path, initial_prompt, audio_duration):
+def _multi_pass_transcribe(audio_path, initial_prompt, audio_duration):
     """
     Try multiple Whisper configurations, from strict to aggressive.
     Returns the best result based on segment count vs. audio duration.
+    
+    VRAM Management:
+      - Loads model fresh, clears VRAM between passes
+      - On OOM: unloads model, clears VRAM, retries on CPU
+      - Explicitly deletes model after completion
     
     Pass 1: Strict — VAD on, temp=0, suppress silence (cleanest)
     Pass 2: Medium — VAD on, lower threshold, temp=0.2
     Pass 3: Loose  — VAD off, temp=0.4
     Pass 4: Nuclear — No prompt at all, temp=0.6, previous text on
-    
-    Stops early if we get a satisfactory number of segments.
     """
-    # Expect roughly 1 segment per 3 seconds of audio
     min_expected = max(2, int(audio_duration / 3.5))
     
     passes = [
@@ -213,40 +214,119 @@ def _multi_pass_transcribe(model, audio_path, initial_prompt, audio_duration):
     
     best_result = None
     best_count = 0
+    model = None
+    used_cpu_fallback = False
     
-    for p in passes:
-        try:
-            print(f"  {p['name']}...")
-            result = model.transcribe(audio_path, **p["params"])
-            
-            if not result or not result.segments:
-                print(f"    → 0 segments")
+    try:
+        # Load model (GPU if available)
+        model = _load_whisper_model()
+        
+        for p in passes:
+            try:
+                # Clear VRAM before each pass
+                _clear_vram()
+                
+                print(f"  {p['name']}...")
+                result = model.transcribe(audio_path, **p["params"])
+                
+                if not result or not result.segments:
+                    print(f"    → 0 segments")
+                    continue
+                
+                count = sum(
+                    1 for s in result.segments
+                    if s.text.strip() and len(s.text.strip()) > 1
+                )
+                print(f"    → {count} segments")
+                
+                if count > best_count:
+                    best_count = count
+                    best_result = result
+                
+                if count >= min_expected:
+                    print(f"    ✓ Sufficient ({count} ≥ {min_expected} expected)")
+                    return result
+                
+            except RuntimeError as e:
+                if "CUDA out of memory" in str(e) and not used_cpu_fallback:
+                    print(f"    ⚠ GPU OOM — switching to CPU fallback...")
+                    # Unload GPU model completely
+                    del model
+                    model = None
+                    _clear_vram()
+                    
+                    # Reload on CPU
+                    model = _load_whisper_model(force_cpu=True)
+                    used_cpu_fallback = True
+                    
+                    # Retry this pass on CPU
+                    try:
+                        result = model.transcribe(audio_path, **p["params"])
+                        if result and result.segments:
+                            count = sum(1 for s in result.segments if s.text.strip() and len(s.text.strip()) > 1)
+                            print(f"    → {count} segments (CPU)")
+                            if count > best_count:
+                                best_count = count
+                                best_result = result
+                            if count >= min_expected:
+                                return result
+                    except Exception as cpu_e:
+                        print(f"    → CPU fallback also failed: {cpu_e}")
+                else:
+                    print(f"    → Error: {e}")
+                    continue
+                    
+            except Exception as e:
+                print(f"    → Error: {e}")
                 continue
-            
-            # Count non-trivial segments (exclude very short text)
-            count = sum(
-                1 for s in result.segments
-                if s.text.strip() and len(s.text.strip()) > 1
+        
+        if best_result:
+            print(f"  ⚠ Best: {best_count} segments (wanted {min_expected}+)")
+        
+        return best_result
+    
+    finally:
+        # ALWAYS clean up model after all passes
+        if model is not None:
+            del model
+        _clear_vram()
+
+
+def _load_whisper_model(force_cpu=False):
+    """Load Whisper model with proper cache dir. Optionally force CPU."""
+    os.makedirs(Config.WHISPER_CACHE_DIR, exist_ok=True)
+    
+    if force_cpu and HAS_TORCH:
+        # Force CPU by temporarily hiding CUDA
+        original_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        try:
+            print(f"  Loading {Config.WHISPER_MODEL} on CPU...")
+            model = load_model(
+                Config.WHISPER_MODEL,
+                download_root=Config.WHISPER_CACHE_DIR,
+                in_memory=False,
             )
-            print(f"    → {count} segments")
-            
-            if count > best_count:
-                best_count = count
-                best_result = result
-            
-            # Good enough — stop trying
-            if count >= min_expected:
-                print(f"    ✓ Sufficient ({count} ≥ {min_expected} expected)")
-                return result
-            
-        except Exception as e:
-            print(f"    → Error: {e}")
-            continue
+        finally:
+            if original_visible is not None:
+                os.environ["CUDA_VISIBLE_DEVICES"] = original_visible
+            else:
+                os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        return model
     
-    if best_result:
-        print(f"  ⚠ Best: {best_count} segments (wanted {min_expected}+)")
-    
-    return best_result
+    return load_model(
+        Config.WHISPER_MODEL,
+        download_root=Config.WHISPER_CACHE_DIR,
+        in_memory=False,
+    )
+
+
+def _clear_vram():
+    """Clear GPU memory between passes / after model unload."""
+    gc.collect()
+    if HAS_TORCH and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
 
 
 # ============================================================================
