@@ -1,306 +1,524 @@
-// =====================================================
-// APOLLOVA ONYX - After Effects Injection Script
-// Injects job data into Onyx template compositions
-// Word-by-word lyrics + spinning vinyl disc
-// =====================================================
+// -------------------------------------------------------
+// APOLLOVA ONYX - After Effects Automation
+// Uses pre-injected paths from GUI (no folder prompt)
+// -------------------------------------------------------
 
-(function() {
-    // Configuration - paths injected by GUI
-    var JOBS_PATH = "{{JOBS_PATH}}";
-    var TEMPLATE_PATH = "{{TEMPLATE_PATH}}";
+// -----------------------------
+// INJECTED PATHS (replaced by GUI)
+// -----------------------------
+var JOBS_PATH = "{{JOBS_PATH}}";
+var TEMPLATE_PATH = "{{TEMPLATE_PATH}}";
+
+// -----------------------------
+// JSON Polyfill (for older AE)
+// -----------------------------
+if (typeof JSON === "undefined") {
+    JSON = {};
+    JSON.parse = function (s) {
+        try { return eval("(" + s + ")"); }
+        catch (e) { alert("Error parsing JSON: " + e.toString()); return null; }
+    };
+    JSON.stringify = function (obj) {
+        var t = typeof obj;
+        if (t !== "object" || obj === null) {
+            if (t === "string") obj = '"' + obj.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+            return String(obj);
+        } else {
+            var n, v, json = [], arr = (obj && obj.constructor === Array);
+            for (n in obj) {
+                v = obj[n];
+                t = typeof v;
+                if (t === "string") v = '"' + v.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+                else if (t === "object" && v !== null) v = JSON.stringify(v);
+                json.push((arr ? "" : '"' + n + '":') + String(v));
+            }
+            return (arr ? "[" : "{") + String(json) + (arr ? "]" : "}");
+        }
+    };
+}
+
+
+// -----------------------------
+// MAIN
+// -----------------------------
+function main() {
+    app.beginUndoGroup("ONYX Batch Music Video Build");
+
+    clearAllJobComps();
+
+    // Use injected path or fallback to prompt
+    var jobsFolder;
+    if (JOBS_PATH.indexOf("{{") === -1 && JOBS_PATH !== "") {
+        jobsFolder = new Folder(JOBS_PATH);
+        $.writeln("Using injected jobs path: " + JOBS_PATH);
+    } else {
+        jobsFolder = Folder.selectDialog("Select your /jobs folder (Apollova-Onyx/jobs)");
+    }
     
-    // Failsafe: If paths weren't injected, prompt user
-    if (JOBS_PATH.indexOf("{{") === 0 || JOBS_PATH === "") {
-        JOBS_PATH = promptForJobsFolder();
-        if (!JOBS_PATH) {
-            alert("Apollova Onyx: No jobs folder selected. Injection cancelled.");
-            return;
+    if (!jobsFolder || !jobsFolder.exists) {
+        alert("Jobs folder not found: " + JOBS_PATH);
+        return;
+    }
+
+    var subfolders = jobsFolder.getFiles(function (f) { return f instanceof Folder; });
+    var jsonFiles = [];
+    
+    for (var i = 0; i < subfolders.length; i++) {
+        var files = subfolders[i].getFiles("job_data.json");
+        if (files && files.length > 0) {
+            jsonFiles.push(files[0]);
         }
     }
     
-    function promptForJobsFolder() {
-        var folder = Folder.selectDialog("Select the Apollova-Onyx/jobs folder:");
-        if (folder) {
-            return folder.fsName.replace(/\\/g, "/");
-        }
-        return null;
+    if (jsonFiles.length === 0) {
+        alert("No job_data.json files found inside subfolders of " + jobsFolder.fsName);
+        return;
     }
-    
-    function main() {
-        // Check if we need to open the template
-        if (app.project.file === null) {
-            var templateFile = new File(TEMPLATE_PATH);
-            if (templateFile.exists) {
-                app.open(templateFile);
-            } else {
-                alert("Template file not found:\n" + TEMPLATE_PATH + "\n\nPlease open the Onyx template manually.");
-                return;
-            }
-        }
+
+    for (var j = 0; j < jsonFiles.length; j++) {
+        var jobFile = jsonFiles[j];
+        if (!jobFile.exists || !jobFile.open("r")) continue;
+        var jobText = jobFile.read();
+        jobFile.close();
+        if (!jobText) continue;
+
+        var jobData;
+        try { jobData = JSON.parse(jobText); }
+        catch (e) { alert("Error parsing " + jobFile.name + ": " + e.toString()); continue; }
+
+        var jobFolder = jobFile.parent;
         
-        // Find job folders
-        var jobsFolder = new Folder(JOBS_PATH);
-        if (!jobsFolder.exists) {
-            var result = confirm("Jobs folder not found at:\n" + JOBS_PATH + "\n\nWould you like to select it manually?");
-            if (result) {
-                JOBS_PATH = promptForJobsFolder();
-                if (!JOBS_PATH) {
-                    alert("No folder selected. Please contact support at apollova.co.uk");
-                    return;
-                }
-                jobsFolder = new Folder(JOBS_PATH);
-            } else {
-                alert("Injection cancelled. Please contact support at apollova.co.uk if this issue persists.");
-                return;
-            }
-        }
+        // Read lyrics.txt and convert to markers
+        var lyricsFile = new File(jobFolder.fsName + "/lyrics.txt");
+        var markers = [];
         
-        // Get all job_XXX folders
-        var jobFolders = jobsFolder.getFiles(function(f) {
-            return f instanceof Folder && f.name.match(/^job_\d+$/);
-        });
-        
-        if (jobFolders.length === 0) {
-            alert("No job folders found in:\n" + JOBS_PATH + "\n\nPlease create jobs first using the Apollova GUI.");
-            return;
-        }
-        
-        jobFolders.sort(function(a, b) {
-            return a.name.localeCompare(b.name);
-        });
-        
-        var successCount = 0;
-        var errorCount = 0;
-        var errors = [];
-        
-        for (var i = 0; i < jobFolders.length; i++) {
-            try {
-                var result = processJob(jobFolders[i], i + 1);
-                if (result) {
-                    successCount++;
-                } else {
-                    errorCount++;
-                }
-            } catch (e) {
-                errorCount++;
-                errors.push("Job " + (i + 1) + ": " + e.toString());
-            }
-        }
-        
-        var message = "Apollova Onyx Injection Complete!\n\n";
-        message += "✓ Successfully processed: " + successCount + " jobs\n";
-        if (errorCount > 0) {
-            message += "✗ Errors: " + errorCount + " jobs\n\n";
-            message += errors.slice(0, 5).join("\n");
-        }
-        message += "\n\nNext: Review compositions and add to render queue.";
-        
-        alert(message);
-    }
-    
-    function processJob(jobFolder, jobNumber) {
-        // Read job_data.json
-        var dataFile = new File(jobFolder.fsName + "/job_data.json");
-        if (!dataFile.exists) {
-            throw new Error("job_data.json not found");
-        }
-        
-        dataFile.open("r");
-        var jsonContent = dataFile.read();
-        dataFile.close();
-        
-        var jobData = JSON.parse(jsonContent);
-        
-        // Find or create composition
-        var compName = "Onyx_" + padNumber(jobNumber, 3);
-        var comp = findCompByName(compName);
-        
-        if (!comp) {
-            var templateComp = findCompByName("Onyx_Template") || findCompByName("Onyx_001");
-            if (templateComp) {
-                comp = templateComp.duplicate();
-                comp.name = compName;
-            } else {
-                throw new Error("Template composition not found");
-            }
-        }
-        
-        // Import audio
-        var audioFile = new File(jobData.audio_trimmed);
-        if (audioFile.exists) {
-            var audioItem = importFile(audioFile);
-            if (audioItem) {
-                var audioLayer = findLayerByName(comp, "AUDIO");
-                if (audioLayer) {
-                    audioLayer.replaceSource(audioItem, false);
-                } else {
-                    audioLayer = comp.layers.add(audioItem);
-                    audioLayer.name = "AUDIO";
-                    audioLayer.moveToEnd();
-                }
-                comp.duration = audioLayer.outPoint;
-            }
-        }
-        
-        // Import cover image for vinyl disc
-        if (jobData.cover_image) {
-            var coverFile = new File(jobData.cover_image);
-            if (coverFile.exists) {
-                var coverItem = importFile(coverFile);
-                if (coverItem) {
-                    // Try different layer names for the disc artwork
-                    var discLayer = findLayerByName(comp, "DISC_ART") || 
-                                   findLayerByName(comp, "VINYL_ART") ||
-                                   findLayerByName(comp, "COVER") ||
-                                   findLayerByName(comp, "ALBUM_ART");
-                    if (discLayer) {
-                        discLayer.replaceSource(coverItem, false);
-                    }
-                }
-            }
-        }
-        
-        // Read lyrics and create markers with word timing
-        var lyricsFile = new File(jobData.lyrics_file);
-        if (lyricsFile.exists) {
-            lyricsFile.open("r");
-            var lyricsContent = lyricsFile.read();
+        if (lyricsFile.exists && lyricsFile.open("r")) {
+            var lyricsText = lyricsFile.read();
             lyricsFile.close();
-            
-            var lyrics = JSON.parse(lyricsContent);
-            
-            var audioLayer = findLayerByName(comp, "AUDIO");
-            if (audioLayer && lyrics.length > 0) {
-                // Clear existing markers
-                while (audioLayer.marker.numKeys > 0) {
-                    audioLayer.marker.removeKey(1);
-                }
-                
-                // Add markers with word timing and color info
-                for (var j = 0; j < lyrics.length; j++) {
-                    var seg = lyrics[j];
-                    var text = seg.lyric_current || seg.text || "";
-                    
-                    // Create marker data with word timing
-                    var markerData = {
-                        text: text,
-                        words: seg.words || [],
-                        color: (j % 2 === 0) ? "white" : "black",
-                        index: j,
-                        end_time: seg.end_time || (lyrics[j + 1] ? lyrics[j + 1].t || lyrics[j + 1].time : comp.duration)
-                    };
-                    
-                    var markerValue = new MarkerValue(text);
-                    markerValue.comment = JSON.stringify(markerData);
-                    
-                    var time = seg.t || seg.time || 0;
-                    audioLayer.marker.setValueAtTime(time, markerValue);
-                }
+            try {
+                var lyricsData = JSON.parse(lyricsText);
+                markers = convertLyricsToMarkers(lyricsData);
+            } catch (e) {
+                $.writeln("Could not parse lyrics.txt: " + e.toString());
             }
         }
+
+        jobData.audio_trimmed = toAbsolute(jobData.audio_trimmed) || (jobFolder.fsName + "/audio_trimmed.wav");
+        jobData.cover_image = toAbsolute(jobData.cover_image) || (jobFolder.fsName + "/cover.png");
+        jobData.job_folder = jobFolder.fsName.replace(/\\/g, "/");
         
-        // Set colors from album art
-        if (jobData.colors && jobData.colors.length >= 2) {
-            setLayerColor(comp, "COLOR_1", jobData.colors[0]);
-            setLayerColor(comp, "COLOR_2", jobData.colors[1]);
-            setLayerColor(comp, "ACCENT", jobData.colors[0]);
+        var jobId = jobData.job_id || (j + 1);
+        var songTitle = jobData.song_title || "Unknown";
+        var colors = jobData.colors || [];
+
+        $.writeln("──────── ONYX Job " + jobId + " ────────");
+        $.writeln("Song: " + songTitle);
+        $.writeln("Markers: " + markers.length);
+
+        var audioFile = new File(jobData.audio_trimmed);
+        var coverFile = new File(jobData.cover_image);
+        
+        if (!audioFile.exists) { 
+            alert("Missing audio:\n" + jobData.audio_trimmed); 
+            continue; 
+        }
+
+        // Duplicate MAIN template
+        var template = findCompByName("MAIN");
+        var newComp = template.duplicate();
+        newComp.name = "ONYX_JOB_" + ("00" + jobId).slice(-3);
+
+        moveItemToFolder(newComp, "OUTPUT" + jobId);
+
+        if (coverFile.exists) {
+            relinkFootageInsideOutputFolder(jobId, jobData.audio_trimmed, jobData.cover_image);
+        } else {
+            relinkAudioOnly(jobId, jobData.audio_trimmed);
         }
         
-        // Set song title if layer exists
-        var titleLayer = findLayerByName(comp, "SONG_TITLE") || findLayerByName(comp, "TITLE");
-        if (titleLayer && titleLayer.property("Source Text")) {
-            titleLayer.property("Source Text").setValue(jobData.song_title || "");
+        setAllCompDurations(jobId, jobData.audio_trimmed);
+        updateSongTitle(jobId, songTitle);
+
+        if (colors && colors.length >= 2) {
+            applyBackgroundColors(jobId, colors);
         }
-        
-        return true;
-    }
-    
-    // Helper functions
-    function padNumber(num, size) {
-        var s = "000" + num;
-        return s.substr(s.length - size);
-    }
-    
-    function findCompByName(name) {
-        for (var i = 1; i <= app.project.numItems; i++) {
-            var item = app.project.item(i);
-            if (item instanceof CompItem && item.name === name) {
-                return item;
-            }
+
+        var lyricComp;
+        try { lyricComp = findCompByName("LYRIC FONT " + jobId); } 
+        catch (e) { $.writeln("Missing LYRIC FONT " + jobId); continue; }
+
+        addOnyxMarkersToAudio(lyricComp, markers);
+        injectOnyxSegmentsToLyricText(lyricComp, markers);
+
+        if (coverFile.exists) {
+            try {
+                var assetsComp = findCompByName("Assets " + jobId);
+                retargetImageLayersToFootage(assetsComp, "COVER");
+            } catch (e) {}
         }
-        return null;
-    }
-    
-    function findLayerByName(comp, name) {
-        for (var i = 1; i <= comp.numLayers; i++) {
-            if (comp.layer(i).name.toUpperCase() === name.toUpperCase()) {
-                return comp.layer(i);
-            }
-        }
-        return null;
-    }
-    
-    function importFile(file) {
+
         try {
-            var importOptions = new ImportOptions(file);
-            return app.project.importFile(importOptions);
+            var outputComp = findCompByName("OUTPUT " + jobId);
+            var renderPath = addToRenderQueue(outputComp, jobData.job_folder, jobId, songTitle, "_ONYX");
+            $.writeln("Queued: " + renderPath);
         } catch (e) {
-            return null;
+            $.writeln("Render queue error: " + e);
         }
     }
-    
-    function hexToRGB(hex) {
-        hex = hex.replace("#", "");
-        var r = parseInt(hex.substring(0, 2), 16) / 255;
-        var g = parseInt(hex.substring(2, 4), 16) / 255;
-        var b = parseInt(hex.substring(4, 6), 16) / 255;
-        return [r, g, b, 1];
-    }
-    
-    function setLayerColor(comp, layerName, hexColor) {
-        var layer = findLayerByName(comp, layerName);
-        if (layer) {
-            var effects = layer.property("Effects");
-            if (effects) {
-                var fill = effects.property("Fill");
-                if (fill) {
-                    fill.property("Color").setValue(hexToRGB(hexColor));
-                }
-            }
-        }
-    }
-    
-    // JSON polyfill
-    if (typeof JSON === "undefined") {
-        JSON = {
-            parse: function(str) {
-                return eval("(" + str + ")");
-            },
-            stringify: function(obj) {
-                if (obj === null) return "null";
-                if (typeof obj === "undefined") return undefined;
-                if (typeof obj === "number" || typeof obj === "boolean") return String(obj);
-                if (typeof obj === "string") return '"' + obj.replace(/"/g, '\\"') + '"';
-                if (obj instanceof Array) {
-                    var arr = [];
-                    for (var i = 0; i < obj.length; i++) {
-                        arr.push(JSON.stringify(obj[i]));
-                    }
-                    return "[" + arr.join(",") + "]";
-                }
-                if (typeof obj === "object") {
-                    var props = [];
-                    for (var key in obj) {
-                        if (obj.hasOwnProperty(key)) {
-                            props.push('"' + key + '":' + JSON.stringify(obj[key]));
-                        }
-                    }
-                    return "{" + props.join(",") + "}";
-                }
-                return String(obj);
-            }
+
+    alert("ONYX: All " + jsonFiles.length + " jobs processed!\n\nReview in Render Queue, then click Render.");
+    app.endUndoGroup();
+}
+
+
+// -----------------------------
+// Convert lyrics.txt to markers
+// -----------------------------
+function convertLyricsToMarkers(lyricsData) {
+    var markers = [];
+    for (var i = 0; i < lyricsData.length; i++) {
+        var seg = lyricsData[i];
+        var text = seg.lyric_current || seg.text || "";
+        if (!text || text.replace(/\s/g, "") === "") continue;
+        
+        var cleanText = text.replace(/\\r/g, " ").replace(/\s+/g, " ").trim();
+        var marker = {
+            time: seg.t || seg.time || 0,
+            text: cleanText,
+            words: seg.words || buildWordsFromText(cleanText, seg.t || 0)
         };
+        
+        if (i < lyricsData.length - 1) {
+            marker.end_time = lyricsData[i + 1].t || lyricsData[i + 1].time || (marker.time + 3);
+        } else {
+            marker.end_time = marker.time + 3;
+        }
+        markers.push(marker);
+    }
+    return markers;
+}
+
+function buildWordsFromText(text, startTime) {
+    var words = text.split(/\s+/);
+    var result = [];
+    for (var i = 0; i < words.length; i++) {
+        if (words[i]) {
+            result.push({
+                word: words[i],
+                start: startTime + (i * 0.3),
+                end: startTime + ((i + 1) * 0.3)
+            });
+        }
+    }
+    return result;
+}
+
+
+// -----------------------------
+// Onyx-specific functions
+// -----------------------------
+function addOnyxMarkersToAudio(lyricComp, markers) {
+    var audio = ensureAudioLayer(lyricComp);
+    if (!audio) return;
+
+    var mk = audio.property("Marker");
+    if (!mk) return;
+
+    for (var i = mk.numKeys; i >= 1; i--) mk.removeKey(i);
+
+    var lastT = 0;
+    for (var k = 0; k < markers.length; k++) {
+        var m = markers[k];
+        var t = Number(m.time) || 0;
+        try {
+            mk.setValueAtTime(t, new MarkerValue(m.text || ""));
+            if (t > lastT) lastT = t;
+        } catch (e) {}
     }
     
-    main();
-})();
+    if (lastT + 2 > lyricComp.duration) lyricComp.duration = lastT + 2;
+    $.writeln("Added " + markers.length + " markers to AUDIO");
+}
+
+function injectOnyxSegmentsToLyricText(lyricComp, markers) {
+    var lyricText = null;
+    try { lyricText = lyricComp.layer("LYRIC_TEXT"); } catch(e) {}
+    
+    if (!lyricText) {
+        for (var i = 1; i <= lyricComp.numLayers; i++) {
+            var lyr = lyricComp.layer(i);
+            if (lyr.name.toUpperCase().indexOf("LYRIC") !== -1 && lyr.property("Source Text")) {
+                lyricText = lyr;
+                break;
+            }
+        }
+    }
+    if (!lyricText) {
+        for (var i = 1; i <= lyricComp.numLayers; i++) {
+            if (lyricComp.layer(i).property("Source Text")) {
+                lyricText = lyricComp.layer(i);
+                break;
+            }
+        }
+    }
+    if (!lyricText) return;
+
+    var segmentsCode = "var segments = [\n";
+    for (var k = 0; k < markers.length; k++) {
+        var m = markers[k];
+        var wordsArr = m.words || [];
+        var wordsStr = "[";
+        for (var w = 0; w < wordsArr.length; w++) {
+            wordsStr += '{word:"' + escapeForExpression(wordsArr[w].word || "") + '",start:' + (wordsArr[w].start || 0) + ',end:' + (wordsArr[w].end || 0) + '}';
+            if (w < wordsArr.length - 1) wordsStr += ",";
+        }
+        wordsStr += "]";
+        segmentsCode += '    {time:' + (m.time || 0) + ',text:"' + escapeForExpression(m.text || "") + '",words:' + wordsStr + ',end_time:' + (m.end_time || (m.time + 3)) + '}';
+        if (k < markers.length - 1) segmentsCode += ",";
+        segmentsCode += "\n";
+    }
+    segmentsCode += "];\n\n";
+
+    var expression = segmentsCode +
+        'var t = time;\nvar output = "";\nvar currentSeg = null;\n\n' +
+        'for (var i = segments.length - 1; i >= 0; i--) {\n' +
+        '    if (t >= segments[i].time) { currentSeg = segments[i]; break; }\n}\n\n' +
+        'if (currentSeg && currentSeg.words && currentSeg.words.length > 0) {\n' +
+        '    var revealedWords = [];\n' +
+        '    for (var w = 0; w < currentSeg.words.length; w++) {\n' +
+        '        if (t >= currentSeg.words[w].start) revealedWords.push(currentSeg.words[w].word);\n' +
+        '    }\n' +
+        '    var lines = [];\n' +
+        '    for (var i = 0; i < revealedWords.length; i += 3) {\n' +
+        '        lines.push(revealedWords.slice(i, Math.min(i + 3, revealedWords.length)).join(" "));\n' +
+        '    }\n' +
+        '    output = lines.join("\\n");\n' +
+        '} else if (currentSeg) { output = currentSeg.text; }\n\noutput;';
+
+    try {
+        lyricText.property("Source Text").expression = expression;
+        $.writeln("Injected Onyx expression");
+    } catch (e) {
+        $.writeln("Failed to inject expression: " + e.toString());
+    }
+}
+
+function escapeForExpression(str) {
+    if (!str) return "";
+    return String(str).replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n").replace(/\r/g, "");
+}
+
+
+// -----------------------------
+// Helper Functions
+// -----------------------------
+function findFolderByName(name) {
+    for (var i = 1; i <= app.project.numItems; i++) {
+        var it = app.project.item(i);
+        if (it instanceof FolderItem && it.name === name) return it;
+    }
+    return null;
+}
+
+function moveItemToFolder(item, folderName) {
+    var folder = findFolderByName(folderName);
+    if (folder) item.parentFolder = folder;
+}
+
+function toAbsolute(p) {
+    if (!p) return p;
+    p = p.replace(/\\/g, "/");
+    var f = new File(p);
+    if (f.exists) return f.fsName.replace(/\\/g, "/");
+    return p;
+}
+
+function hexToRGB(hex) {
+    if (!hex || typeof hex !== "string") return [1, 1, 1];
+    hex = hex.replace("#", "");
+    try {
+        return [
+            parseInt(hex.substring(0, 2), 16) / 255,
+            parseInt(hex.substring(2, 4), 16) / 255,
+            parseInt(hex.substring(4, 6), 16) / 255
+        ];
+    } catch (e) { return [1, 1, 1]; }
+}
+
+function findCompByName(name) {
+    for (var i = 1; i <= app.project.numItems; i++) {
+        var it = app.project.item(i);
+        if (it instanceof CompItem && it.name === name) return it;
+    }
+    throw new Error("Comp not found: " + name);
+}
+
+function ensureAudioLayer(comp) {
+    var lyr = comp.layer("AUDIO");
+    if (lyr) return lyr;
+    for (var i = 1; i <= comp.numLayers; i++) {
+        var L = comp.layer(i);
+        if (L instanceof AVLayer && L.hasAudio) {
+            try { L.name = "AUDIO"; } catch (_) {}
+            return L;
+        }
+    }
+    return null;
+}
+
+function relinkFootageInsideOutputFolder(jobId, audioPath, imagePath) {
+    var folder = findFolderByName("OUTPUT" + jobId);
+    if (!folder) return;
+
+    for (var i = 1; i <= folder.numItems; i++) {
+        var it = folder.item(i);
+        if (!(it instanceof FootageItem)) continue;
+        var n = it.name.toUpperCase();
+
+        if (n.indexOf("AUDIO") !== -1 || n.indexOf("WAV") !== -1 || n.indexOf("MP3") !== -1) {
+            var af = new File(audioPath);
+            if (af.exists) try { it.replace(af); } catch(e) {}
+        }
+        if (n.indexOf("COVER") !== -1 || n.indexOf("IMAGE") !== -1 || n.indexOf("ART") !== -1 || n.indexOf("PNG") !== -1) {
+            var imgf = new File(imagePath);
+            if (imgf.exists) try { it.replace(imgf); } catch(e) {}
+        }
+    }
+}
+
+function relinkAudioOnly(jobId, audioPath) {
+    var folder = findFolderByName("OUTPUT" + jobId);
+    if (!folder) return;
+    for (var i = 1; i <= folder.numItems; i++) {
+        var it = folder.item(i);
+        if (!(it instanceof FootageItem)) continue;
+        var n = it.name.toUpperCase();
+        if (n.indexOf("AUDIO") !== -1 || n.indexOf("WAV") !== -1 || n.indexOf("MP3") !== -1) {
+            var af = new File(audioPath);
+            if (af.exists) try { it.replace(af); } catch(e) {}
+        }
+    }
+}
+
+function setAllCompDurations(jobId, audioPath) {
+    var audioFile = new File(audioPath);
+    if (!audioFile.exists) return;
+    var imported = app.project.importFile(new ImportOptions(audioFile));
+    var dur = imported.duration;
+    imported.remove();
+
+    try {
+        var outputComp = findCompByName("OUTPUT " + jobId);
+        outputComp.duration = dur;
+        outputComp.workAreaStart = 0;
+        outputComp.workAreaDuration = dur;
+    } catch(e) {}
+
+    try {
+        var lyricComp = findCompByName("LYRIC FONT " + jobId);
+        lyricComp.duration = dur;
+        lyricComp.workAreaStart = 0;
+        lyricComp.workAreaDuration = dur;
+    } catch(e) {}
+
+    try {
+        var bgComp = findCompByName("BACKGROUND " + jobId);
+        bgComp.duration = dur;
+        bgComp.workAreaStart = 0;
+        bgComp.workAreaDuration = dur;
+    } catch(e) {}
+}
+
+function applyBackgroundColors(jobId, colors) {
+    if (!colors || colors.length < 2) return;
+    var bgComp;
+    try { bgComp = findCompByName("BACKGROUND " + jobId); } catch (_) { return; }
+
+    var gradientLayer = bgComp.layer("Gradient");
+    if (!gradientLayer) return;
+
+    var effectParade = gradientLayer.property("ADBE Effect Parade");
+    if (!effectParade) return;
+
+    var gradient4Color = effectParade.property("4-Color Gradient");
+    if (!gradient4Color) return;
+
+    try {
+        var c1 = gradient4Color.property("Color 1");
+        var c2 = gradient4Color.property("Color 2");
+        var c3 = gradient4Color.property("Color 3");
+        var c4 = gradient4Color.property("Color 4");
+        if (c1) c1.setValue(hexToRGB(colors[0]));
+        if (c2) c2.setValue(hexToRGB(colors[1]));
+        if (c3) c3.setValue(hexToRGB(colors.length > 2 ? colors[2] : colors[0]));
+        if (c4) c4.setValue(hexToRGB(colors[0]));
+    } catch (e) {}
+}
+
+function updateSongTitle(jobId, titleText) {
+    if (!titleText) return;
+    try {
+        var assetsComp = findCompByName("Assets " + jobId);
+        for (var i = 1; i <= assetsComp.numLayers; i++) {
+            var lyr = assetsComp.layer(i);
+            var txtProp = lyr.property("Source Text");
+            if (txtProp) {
+                var doc = txtProp.value;
+                doc.text = String(titleText);
+                txtProp.setValue(doc);
+                return;
+            }
+        }
+    } catch (e) {}
+}
+
+function retargetImageLayersToFootage(assetComp, footageName) {
+    if (!assetComp) return;
+    var coverFootage = null;
+    for (var i = 1; i <= app.project.numItems; i++) {
+        var it = app.project.item(i);
+        if (it instanceof FootageItem && it.name.toUpperCase() === footageName.toUpperCase()) {
+            coverFootage = it; break;
+        }
+    }
+    if (!coverFootage) return;
+    for (var L = 1; L <= assetComp.numLayers; L++) {
+        var lyr = assetComp.layer(L);
+        if (!(lyr instanceof AVLayer) || !(lyr.source instanceof FootageItem)) continue;
+        var lyrName = (lyr.name || "").toLowerCase();
+        if (lyrName === "cover" || lyrName.indexOf("album") !== -1 || lyrName.indexOf("art") !== -1) {
+            try { lyr.replaceSource(coverFootage, false); } catch (e) {}
+        }
+    }
+}
+
+function addToRenderQueue(comp, jobFolder, jobId, songTitle, suffix) {
+    try {
+        jobFolder = String(jobFolder).replace(/\\/g, "/");
+        var root = new Folder(jobFolder).parent;
+        var renderDir = new Folder(root.fsName + "/renders");
+        if (!renderDir.exists) renderDir.create();
+        var safeTitle = sanitizeFilename(songTitle);
+        var outPath = renderDir.fsName.replace(/\\/g, "/") + "/" + safeTitle + (suffix || "") + ".mp4";
+        var rq = app.project.renderQueue.items.add(comp);
+        rq.outputModule(1).file = new File(outPath);
+        return outPath;
+    } catch (err) { return null; }
+}
+
+function sanitizeFilename(name) {
+    if (!name) return "untitled";
+    return String(name).replace(/[\/\\:*?"<>|]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function clearAllJobComps() {
+    for (var i = app.project.numItems; i >= 1; i--) {
+        var it = app.project.item(i);
+        if (it instanceof CompItem && it.name.indexOf("ONYX_JOB_") === 0) {
+            try { it.remove(); } catch (e) {}
+        }
+    }
+}
+
+// -----------------------------
+main();

@@ -36,6 +36,7 @@ from scripts.image_processing import download_image, extract_colors
 from scripts.lyric_processing import transcribe_audio
 from scripts.song_database import SongDatabase
 from scripts.genius_processing import fetch_genius_image
+from scripts.smart_picker import SmartSongPicker
 
 
 # Directory structure constants
@@ -274,7 +275,7 @@ class AppollovaApp:
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
     
     def _create_job_tab(self):
-        """Create the Job Creation tab"""
+        """Create the Job Creation tab with Manual/Smart Picker sub-tabs"""
         
         # Scrollable content
         scroll_frame = ScrollableFrame(self.job_tab)
@@ -314,25 +315,33 @@ class AppollovaApp:
         self.output_path_label = ttk.Label(path_frame, text=str(AURORA_JOBS_DIR), foreground='#888888')
         self.output_path_label.pack(side=tk.LEFT, padx=(5, 0))
         
-        # === SONG INPUT ===
-        song_frame = ttk.LabelFrame(content_padding, text="Song Details", style='Section.TLabelframe', padding="10")
+        # === SONG INPUT with Sub-Tabs ===
+        song_frame = ttk.LabelFrame(content_padding, text="Song Selection", style='Section.TLabelframe', padding="10")
         song_frame.pack(fill=tk.X, pady=(0, 15))
         
-        ttk.Label(song_frame, text="Song Title (Artist - Song):").pack(anchor=tk.W)
-        self.title_entry = ttk.Entry(song_frame, width=60, font=('Segoe UI', 10))
+        # Sub-notebook for Manual vs Smart Picker
+        self.song_notebook = ttk.Notebook(song_frame)
+        self.song_notebook.pack(fill=tk.X, expand=True)
+        
+        # --- Manual Entry Tab ---
+        manual_tab = ttk.Frame(self.song_notebook, padding="10")
+        self.song_notebook.add(manual_tab, text="  ✏️ Manual Entry  ")
+        
+        ttk.Label(manual_tab, text="Song Title (Artist - Song):").pack(anchor=tk.W)
+        self.title_entry = ttk.Entry(manual_tab, width=60, font=('Segoe UI', 10))
         self.title_entry.pack(fill=tk.X, pady=(2, 10))
         self.title_entry.bind('<KeyRelease>', self._check_database)
         self.input_widgets.append(self.title_entry)
         
-        self.db_match_label = ttk.Label(song_frame, text="", foreground='#666666')
+        self.db_match_label = ttk.Label(manual_tab, text="", foreground='#666666')
         self.db_match_label.pack(anchor=tk.W)
         
-        ttk.Label(song_frame, text="YouTube URL:").pack(anchor=tk.W, pady=(10, 0))
-        self.url_entry = ttk.Entry(song_frame, width=60, font=('Segoe UI', 10))
+        ttk.Label(manual_tab, text="YouTube URL:").pack(anchor=tk.W, pady=(10, 0))
+        self.url_entry = ttk.Entry(manual_tab, width=60, font=('Segoe UI', 10))
         self.url_entry.pack(fill=tk.X, pady=(2, 10))
         self.input_widgets.append(self.url_entry)
         
-        time_frame = ttk.Frame(song_frame)
+        time_frame = ttk.Frame(manual_tab)
         time_frame.pack(fill=tk.X, pady=(0, 5))
         
         ttk.Label(time_frame, text="Start Time (MM:SS):").pack(side=tk.LEFT)
@@ -346,6 +355,50 @@ class AppollovaApp:
         self.end_entry.pack(side=tk.LEFT, padx=(5, 0))
         self.end_entry.insert(0, "01:01")
         self.input_widgets.append(self.end_entry)
+        
+        # --- Smart Picker Tab ---
+        smart_tab = ttk.Frame(self.song_notebook, padding="10")
+        self.song_notebook.add(smart_tab, text="  🤖 Smart Picker  ")
+        
+        # Smart Picker description
+        desc_text = "Smart Picker automatically selects songs from your database.\n" \
+                    "It ensures fair rotation: no song is used twice until all songs have been used once."
+        ttk.Label(smart_tab, text=desc_text, foreground='#666666', wraplength=500, justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 15))
+        
+        # Database stats frame
+        stats_frame = ttk.Frame(smart_tab)
+        stats_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        self.smart_stats_label = ttk.Label(stats_frame, text="Loading database stats...", style='Status.TLabel')
+        self.smart_stats_label.pack(anchor=tk.W)
+        
+        # Refresh stats button
+        ttk.Button(stats_frame, text="🔄 Refresh Stats", command=self._refresh_smart_picker_stats).pack(anchor=tk.W, pady=(5, 0))
+        
+        # Song preview listbox
+        ttk.Label(smart_tab, text="Next songs to be selected:", font=('Segoe UI', 9, 'bold')).pack(anchor=tk.W, pady=(10, 5))
+        
+        list_frame = ttk.Frame(smart_tab)
+        list_frame.pack(fill=tk.X)
+        
+        self.smart_listbox = tk.Listbox(list_frame, height=8, font=('Consolas', 9),
+                                         bg='#f5f5f5', selectmode=tk.SINGLE)
+        self.smart_listbox.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        list_scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.smart_listbox.yview)
+        list_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.smart_listbox.configure(yscrollcommand=list_scrollbar.set)
+        
+        # Smart picker warning if no songs
+        self.smart_warning_label = ttk.Label(smart_tab, text="", style='Warning.TLabel')
+        self.smart_warning_label.pack(anchor=tk.W, pady=(10, 0))
+        
+        # Initialize smart picker display
+        self._refresh_smart_picker_stats()
+        
+        # Track which mode is selected
+        self.song_notebook.bind("<<NotebookTabChanged>>", self._on_song_mode_changed)
+        self.use_smart_picker = False
         
         # === SETTINGS ===
         settings_frame = ttk.LabelFrame(content_padding, text="Job Settings", style='Section.TLabelframe', padding="10")
@@ -418,6 +471,62 @@ class AppollovaApp:
         
         ttk.Button(button_frame, text="Open Jobs Folder", command=self._open_jobs_folder).pack(side=tk.LEFT)
     
+    def _on_song_mode_changed(self, event=None):
+        """Handle switching between Manual and Smart Picker modes"""
+        selected_tab = self.song_notebook.index(self.song_notebook.select())
+        self.use_smart_picker = (selected_tab == 1)  # 0 = Manual, 1 = Smart Picker
+        
+        if self.use_smart_picker:
+            self._refresh_smart_picker_stats()
+    
+    def _refresh_smart_picker_stats(self):
+        """Refresh the Smart Picker statistics and song list"""
+        try:
+            picker = SmartSongPicker(db_path=str(DATABASE_DIR / "songs.db"))
+            stats = picker.get_database_stats()
+            
+            # Update stats label
+            if stats['total_songs'] == 0:
+                self.smart_stats_label.config(
+                    text="📊 Database is empty. Add songs using Manual Entry first.",
+                    style='Warning.TLabel'
+                )
+                self.smart_warning_label.config(
+                    text="⚠️ No songs available. Use Manual Entry to add songs to the database."
+                )
+                self.smart_listbox.delete(0, tk.END)
+                return
+            
+            stats_text = f"📊 Total: {stats['total_songs']} songs | " \
+                        f"Unused: {stats['unused_songs']} | " \
+                        f"Uses: {stats['min_uses']}-{stats['max_uses']} (avg: {stats['avg_uses']})"
+            self.smart_stats_label.config(text=stats_text, style='Status.TLabel')
+            
+            # Get preview of next songs
+            num_jobs = int(self.jobs_var.get())
+            songs = picker.get_available_songs(num_songs=num_jobs)
+            
+            # Update listbox
+            self.smart_listbox.delete(0, tk.END)
+            for i, song in enumerate(songs, 1):
+                status = "🆕 new" if song['use_count'] == 1 else f"📊 {song['use_count']}x"
+                display = f"{i:2}. {song['song_title'][:45]:<45} ({status})"
+                self.smart_listbox.insert(tk.END, display)
+            
+            # Update warning
+            if len(songs) < num_jobs:
+                self.smart_warning_label.config(
+                    text=f"⚠️ Only {len(songs)} songs available, but {num_jobs} requested."
+                )
+            else:
+                self.smart_warning_label.config(text="")
+                
+        except Exception as e:
+            self.smart_stats_label.config(
+                text=f"❌ Error loading database: {e}",
+                style='Error.TLabel'
+            )
+    
     def _create_inject_tab(self):
         """Create the JSX Injection tab"""
         
@@ -472,6 +581,18 @@ class AppollovaApp:
         ttk.Label(ae_row, text="After Effects:", width=15, anchor='w').pack(side=tk.LEFT)
         self.inject_ae_label = ttk.Label(ae_row, text="Checking...", style='Status.TLabel')
         self.inject_ae_label.pack(side=tk.LEFT)
+        
+        # Refresh button
+        refresh_row = ttk.Frame(status_frame)
+        refresh_row.pack(fill=tk.X, pady=(15, 0))
+        
+        ttk.Button(refresh_row, text="🔄 Refresh Status", command=self._update_inject_status).pack(side=tk.LEFT)
+        
+        # Install path info (for debugging)
+        path_row = ttk.Frame(status_frame)
+        path_row.pack(fill=tk.X, pady=(10, 0))
+        
+        ttk.Label(path_row, text=f"Install Dir: {INSTALL_DIR}", foreground='#888888', font=('Consolas', 8)).pack(anchor=tk.W)
         
         # === INJECT BUTTON ===
         button_frame = ttk.Frame(content)
@@ -588,19 +709,19 @@ Database: {DATABASE_DIR}"""
             job_folders = list(jobs_dir.glob("job_*"))
             if job_folders:
                 self.inject_jobs_label.config(
-                    text=f"✓ {len(job_folders)} job(s) found",
+                    text=f"✓ {len(job_folders)} job(s) found in {jobs_dir.name}",
                     style='Success.TLabel'
                 )
                 jobs_ok = True
             else:
                 self.inject_jobs_label.config(
-                    text="✗ No jobs found - create jobs first",
+                    text=f"✗ No jobs in {jobs_dir}",
                     style='Error.TLabel'
                 )
                 jobs_ok = False
         else:
             self.inject_jobs_label.config(
-                text="✗ Jobs folder not found",
+                text=f"✗ Folder not found: {jobs_dir}",
                 style='Error.TLabel'
             )
             jobs_ok = False
@@ -873,31 +994,45 @@ Database: {DATABASE_DIR}"""
         self.status_var.set(message[:80])
     
     def _validate_inputs(self):
-        """Validate inputs"""
+        """Validate inputs based on current mode (Manual or Smart Picker)"""
         errors = []
         
-        if not self.title_entry.get().strip():
-            errors.append("Song title is required")
-        
-        if not self.url_entry.get().strip():
-            cached = self.song_db.get_song(self.title_entry.get().strip())
-            if not cached:
-                errors.append("YouTube URL is required")
-        
-        start = self.start_entry.get().strip()
-        end = self.end_entry.get().strip()
-        
-        try:
-            s_parts = start.split(':')
-            e_parts = end.split(':')
-            if len(s_parts) != 2 or len(e_parts) != 2:
-                raise ValueError()
-            s_ms = int(s_parts[0]) * 60 + int(s_parts[1])
-            e_ms = int(e_parts[0]) * 60 + int(e_parts[1])
-            if s_ms >= e_ms:
-                errors.append("End time must be after start time")
-        except:
-            errors.append("Invalid time format (use MM:SS)")
+        if self.use_smart_picker:
+            # Smart Picker mode - check database has songs
+            picker = SmartSongPicker(db_path=str(DATABASE_DIR / "songs.db"))
+            stats = picker.get_database_stats()
+            
+            if stats['total_songs'] == 0:
+                errors.append("Database is empty. Add songs using Manual Entry first.")
+            else:
+                num_jobs = int(self.jobs_var.get())
+                songs = picker.get_available_songs(num_songs=num_jobs)
+                if len(songs) == 0:
+                    errors.append("No songs available in database.")
+        else:
+            # Manual mode - validate form fields
+            if not self.title_entry.get().strip():
+                errors.append("Song title is required")
+            
+            if not self.url_entry.get().strip():
+                cached = self.song_db.get_song(self.title_entry.get().strip())
+                if not cached:
+                    errors.append("YouTube URL is required")
+            
+            start = self.start_entry.get().strip()
+            end = self.end_entry.get().strip()
+            
+            try:
+                s_parts = start.split(':')
+                e_parts = end.split(':')
+                if len(s_parts) != 2 or len(e_parts) != 2:
+                    raise ValueError()
+                s_ms = int(s_parts[0]) * 60 + int(s_parts[1])
+                e_ms = int(e_parts[0]) * 60 + int(e_parts[1])
+                if s_ms >= e_ms:
+                    errors.append("End time must be after start time")
+            except:
+                errors.append("Invalid time format (use MM:SS)")
         
         if errors:
             messagebox.showerror("Validation Error", "\n".join(errors))
@@ -924,6 +1059,27 @@ Database: {DATABASE_DIR}"""
         template = self.job_template_var.get()
         jobs_dir = JOBS_DIRS.get(template)
         existing = list(jobs_dir.glob("job_*")) if jobs_dir.exists() else []
+        
+        # Smart Picker confirmation
+        if self.use_smart_picker:
+            num_jobs = int(self.jobs_var.get())
+            picker = SmartSongPicker(db_path=str(DATABASE_DIR / "songs.db"))
+            songs = picker.get_available_songs(num_songs=num_jobs)
+            
+            # Build confirmation message
+            song_list = "\n".join([f"  {i+1}. {s['song_title'][:40]}" for i, s in enumerate(songs[:12])])
+            if len(songs) > 12:
+                song_list += f"\n  ... and {len(songs) - 12} more"
+            
+            result = messagebox.askyesno(
+                "Smart Picker Confirmation",
+                f"Generate {len(songs)} jobs for {template.upper()} template?\n\n"
+                f"Songs selected:\n{song_list}\n\n"
+                "Continue?",
+                icon='question'
+            )
+            if not result:
+                return
         
         if existing:
             result = messagebox.askyesnocancel(
@@ -959,200 +1115,131 @@ Database: {DATABASE_DIR}"""
         self._log("Cancellation requested...")
     
     def _process_jobs(self):
-        """Process jobs (runs in thread)"""
+        """Process jobs (runs in thread) - handles both Manual and Smart Picker modes"""
         try:
-            song_title = self.title_entry.get().strip()
-            youtube_url = self.url_entry.get().strip()
-            start_time = self.start_entry.get().strip()
-            end_time = self.end_entry.get().strip()
             num_jobs = int(self.jobs_var.get())
             template = self.job_template_var.get()
             output_dir = JOBS_DIRS.get(template)
             
             Config.WHISPER_MODEL = self.whisper_var.get()
             
-            self._log(f"Starting {num_jobs} job(s): {song_title}")
-            self._log(f"Template: {template.upper()}")
-            
-            cached = self.song_db.get_song(song_title)
-            if cached:
-                self._log("✓ Using cached data")
-                youtube_url = cached['youtube_url']
-                start_time = cached['start_time']
-                end_time = cached['end_time']
-            
-            output_dir.mkdir(parents=True, exist_ok=True)
-            job_folder = output_dir / "job_001"
-            job_folder.mkdir(parents=True, exist_ok=True)
-            
-            needs_image = template in ['aurora', 'onyx']
-            total_steps = 6 if needs_image else 4
-            current_step = 0
-            
-            def update_progress():
-                nonlocal current_step
-                current_step += 1
-                self.root.after(0, lambda: self.progress_var.set((current_step / total_steps) * 100))
-            
-            # Download
-            if self.cancel_requested: raise Exception("Cancelled")
-            audio_path = job_folder / "audio_source.mp3"
-            if not audio_path.exists():
-                self._log("Downloading audio...")
-                download_audio(youtube_url, str(job_folder))
-                self._log("✓ Audio downloaded")
-            else:
-                self._log("✓ Audio exists")
-            update_progress()
-            
-            # Trim
-            if self.cancel_requested: raise Exception("Cancelled")
-            trimmed_path = job_folder / "audio_trimmed.wav"
-            if not trimmed_path.exists():
-                self._log(f"Trimming ({start_time} → {end_time})...")
-                trim_audio(str(job_folder), start_time, end_time)
-                self._log("✓ Audio trimmed")
-            else:
-                self._log("✓ Trimmed audio exists")
-            update_progress()
-            
-            # Beats
-            if self.cancel_requested: raise Exception("Cancelled")
-            beats_path = job_folder / "beats.json"
-            if cached and cached.get('beats'):
-                beats = cached['beats']
-                with open(beats_path, 'w') as f:
-                    json.dump(beats, f, indent=4)
-                self._log("✓ Using cached beats")
-            elif not beats_path.exists():
-                self._log("Detecting beats...")
-                beats = detect_beats(str(job_folder))
-                with open(beats_path, 'w') as f:
-                    json.dump(beats, f, indent=4)
-                self._log(f"✓ {len(beats)} beats detected")
-            else:
-                with open(beats_path, 'r') as f:
-                    beats = json.load(f)
-                self._log("✓ Beats exist")
-            update_progress()
-            
-            # Transcribe
-            if self.cancel_requested: raise Exception("Cancelled")
-            lyrics_path = job_folder / "lyrics.txt"
-            if cached and cached.get('transcribed_lyrics'):
-                with open(lyrics_path, 'w', encoding='utf-8') as f:
-                    json.dump(cached['transcribed_lyrics'], f, indent=4, ensure_ascii=False)
-                self._log(f"✓ Using cached lyrics ({len(cached['transcribed_lyrics'])} segments)")
-            elif not lyrics_path.exists():
-                self._log(f"Transcribing ({Config.WHISPER_MODEL})...")
-                transcribe_audio(str(job_folder), song_title)
-                self._log("✓ Transcription complete")
-            else:
-                self._log("✓ Lyrics exist")
-            update_progress()
-            
-            # Image & Colors
-            image_path = job_folder / "cover.png"
-            colors = ['#ffffff', '#000000']
-            
-            if needs_image:
-                if self.cancel_requested: raise Exception("Cancelled")
-                if not image_path.exists():
-                    self._log("Fetching cover image...")
-                    result = fetch_genius_image(song_title, str(job_folder))
-                    if result:
-                        self._log("✓ Cover downloaded")
-                    else:
-                        self._log("⚠ No cover found")
-                else:
-                    self._log("✓ Cover exists")
-                update_progress()
+            if self.use_smart_picker:
+                # SMART PICKER MODE - process multiple different songs
+                self._log(f"🤖 Smart Picker Mode: {num_jobs} songs")
+                self._log(f"Template: {template.upper()}")
                 
-                if self.cancel_requested: raise Exception("Cancelled")
-                if image_path.exists():
-                    if cached and cached.get('colors'):
-                        colors = cached['colors']
-                        self._log(f"✓ Using cached colors")
-                    else:
-                        self._log("Extracting colors...")
-                        colors = extract_colors(str(job_folder))
-                        self._log(f"✓ Colors: {', '.join(colors)}")
-                update_progress()
-            
-            # Save job data
-            with open(lyrics_path, 'r', encoding='utf-8') as f:
-                lyrics_data = json.load(f)
-            
-            job_data = {
-                "job_id": 1,
-                "song_title": song_title,
-                "youtube_url": youtube_url,
-                "start_time": start_time,
-                "end_time": end_time,
-                "template": template,
-                "audio_trimmed": str(job_folder / "audio_trimmed.wav"),
-                "cover_image": str(image_path) if image_path.exists() else None,
-                "colors": colors,
-                "lyrics_file": str(lyrics_path),
-                "beats": beats,
-                "created_at": datetime.now().isoformat()
-            }
-            
-            with open(job_folder / "job_data.json", 'w') as f:
-                json.dump(job_data, f, indent=4)
-            
-            # Duplicate for remaining jobs
-            if num_jobs > 1:
-                self._log(f"Creating {num_jobs - 1} more job folders...")
-                for i in range(2, num_jobs + 1):
-                    dest = output_dir / f"job_{i:03}"
-                    dest.mkdir(parents=True, exist_ok=True)
+                picker = SmartSongPicker(db_path=str(DATABASE_DIR / "songs.db"))
+                songs = picker.get_available_songs(num_songs=num_jobs)
+                
+                output_dir.mkdir(parents=True, exist_ok=True)
+                
+                total_songs = len(songs)
+                for idx, song in enumerate(songs, 1):
+                    if self.cancel_requested:
+                        raise Exception("Cancelled by user")
                     
-                    for file in ['audio_trimmed.wav', 'lyrics.txt', 'beats.json']:
-                        src = job_folder / file
-                        if src.exists():
-                            shutil.copy(src, dest / file)
+                    self._log(f"\n{'='*40}")
+                    self._log(f"📀 Job {idx}/{total_songs}: {song['song_title'][:40]}")
                     
-                    if image_path.exists():
-                        shutil.copy(image_path, dest / "cover.png")
+                    # Process this song
+                    self._process_single_song(
+                        job_number=idx,
+                        song_title=song['song_title'],
+                        youtube_url=song['youtube_url'],
+                        start_time=song['start_time'],
+                        end_time=song['end_time'],
+                        template=template,
+                        output_dir=output_dir
+                    )
                     
-                    jd = job_data.copy()
-                    jd['job_id'] = i
-                    jd['audio_trimmed'] = str(dest / "audio_trimmed.wav")
-                    jd['cover_image'] = str(dest / "cover.png") if image_path.exists() else None
-                    jd['lyrics_file'] = str(dest / "lyrics.txt")
+                    # Mark as used
+                    picker.mark_song_used(song['song_title'])
                     
-                    with open(dest / "job_data.json", 'w') as f:
-                        json.dump(jd, f, indent=4)
-            
-            # Save to database
-            if not cached:
-                self._log("Saving to database...")
-                self.song_db.add_song(
+                    # Update progress
+                    progress = (idx / total_songs) * 100
+                    self.root.after(0, lambda p=progress: self.progress_var.set(p))
+                
+                # Done
+                self._log(f"\n{'='*40}")
+                self._log(f"🎉 SUCCESS! {total_songs} job(s) created!")
+                self._log(f"📂 {output_dir}")
+                self._log("")
+                self._log("Next: Go to JSX Injection tab")
+                
+            else:
+                # MANUAL MODE - single song, possibly duplicated
+                song_title = self.title_entry.get().strip()
+                youtube_url = self.url_entry.get().strip()
+                start_time = self.start_entry.get().strip()
+                end_time = self.end_entry.get().strip()
+                
+                self._log(f"Starting {num_jobs} job(s): {song_title}")
+                self._log(f"Template: {template.upper()}")
+                
+                cached = self.song_db.get_song(song_title)
+                if cached:
+                    self._log("✓ Using cached data")
+                    youtube_url = cached['youtube_url']
+                    start_time = cached['start_time']
+                    end_time = cached['end_time']
+                
+                output_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Process first job
+                job_data, job_folder = self._process_single_song(
+                    job_number=1,
                     song_title=song_title,
                     youtube_url=youtube_url,
                     start_time=start_time,
                     end_time=end_time,
-                    genius_image_url=None,
-                    transcribed_lyrics=lyrics_data,
-                    colors=colors,
-                    beats=beats
+                    template=template,
+                    output_dir=output_dir,
+                    return_data=True
                 )
-            else:
-                self.song_db.mark_song_used(song_title)
+                
+                # Duplicate for remaining jobs (same song)
+                if num_jobs > 1:
+                    self._log(f"Creating {num_jobs - 1} duplicate job folders...")
+                    image_path = job_folder / "cover.png"
+                    
+                    for i in range(2, num_jobs + 1):
+                        dest = output_dir / f"job_{i:03}"
+                        dest.mkdir(parents=True, exist_ok=True)
+                        
+                        for file in ['audio_trimmed.wav', 'lyrics.txt', 'beats.json']:
+                            src = job_folder / file
+                            if src.exists():
+                                shutil.copy(src, dest / file)
+                        
+                        if image_path.exists():
+                            shutil.copy(image_path, dest / "cover.png")
+                        
+                        jd = job_data.copy()
+                        jd['job_id'] = i
+                        jd['audio_trimmed'] = str(dest / "audio_trimmed.wav")
+                        jd['cover_image'] = str(dest / "cover.png") if image_path.exists() else None
+                        jd['lyrics_file'] = str(dest / "lyrics.txt")
+                        
+                        with open(dest / "job_data.json", 'w') as f:
+                            json.dump(jd, f, indent=4)
+                
+                # Done
+                self.progress_var.set(100)
+                self._log("=" * 40)
+                self._log(f"🎉 SUCCESS! {num_jobs} job(s) created!")
+                self._log(f"📂 {output_dir}")
+                self._log("")
+                self._log("Next: Go to JSX Injection tab")
             
-            # Done
-            self.progress_var.set(100)
-            self._log("=" * 40)
-            self._log(f"🎉 SUCCESS! {num_jobs} job(s) created!")
-            self._log(f"📂 {output_dir}")
-            self._log("")
-            self._log("Next: Go to JSX Injection tab")
-            
+            # Update stats
             stats = self.song_db.get_stats()
             self.root.after(0, lambda: self.stats_label.config(
                 text=f"📊 Database: {stats['total_songs']} songs | {stats['cached_lyrics']} with lyrics"
             ))
+            
+            # Refresh smart picker if it was used
+            if self.use_smart_picker:
+                self.root.after(0, self._refresh_smart_picker_stats)
             
             self.root.after(0, lambda: messagebox.showinfo(
                 "Complete!",
@@ -1170,6 +1257,151 @@ Database: {DATABASE_DIR}"""
             self.root.after(0, lambda: self.generate_btn.configure(state='normal'))
             self.root.after(0, lambda: self.cancel_btn.configure(state='disabled'))
             self.root.after(0, self._check_existing_jobs)
+    
+    def _process_single_song(self, job_number, song_title, youtube_url, start_time, end_time, 
+                              template, output_dir, return_data=False):
+        """Process a single song into a job folder"""
+        job_folder = output_dir / f"job_{job_number:03}"
+        job_folder.mkdir(parents=True, exist_ok=True)
+        
+        needs_image = template in ['aurora', 'onyx']
+        
+        # Check cache
+        cached = self.song_db.get_song(song_title)
+        if cached:
+            self._log("  ✓ Using cached data")
+            youtube_url = cached['youtube_url']
+            start_time = cached['start_time']
+            end_time = cached['end_time']
+        
+        # Download
+        if self.cancel_requested: raise Exception("Cancelled")
+        audio_path = job_folder / "audio_source.mp3"
+        if not audio_path.exists():
+            self._log("  Downloading audio...")
+            download_audio(youtube_url, str(job_folder))
+            self._log("  ✓ Audio downloaded")
+        else:
+            self._log("  ✓ Audio exists")
+        
+        # Trim
+        if self.cancel_requested: raise Exception("Cancelled")
+        trimmed_path = job_folder / "audio_trimmed.wav"
+        if not trimmed_path.exists():
+            self._log(f"  Trimming ({start_time} → {end_time})...")
+            trim_audio(str(job_folder), start_time, end_time)
+            self._log("  ✓ Audio trimmed")
+        else:
+            self._log("  ✓ Trimmed audio exists")
+        
+        # Beats
+        if self.cancel_requested: raise Exception("Cancelled")
+        beats_path = job_folder / "beats.json"
+        if cached and cached.get('beats'):
+            beats = cached['beats']
+            with open(beats_path, 'w') as f:
+                json.dump(beats, f, indent=4)
+            self._log("  ✓ Using cached beats")
+        elif not beats_path.exists():
+            self._log("  Detecting beats...")
+            beats = detect_beats(str(job_folder))
+            with open(beats_path, 'w') as f:
+                json.dump(beats, f, indent=4)
+            self._log(f"  ✓ {len(beats)} beats detected")
+        else:
+            with open(beats_path, 'r') as f:
+                beats = json.load(f)
+            self._log("  ✓ Beats exist")
+        
+        # Transcribe
+        if self.cancel_requested: raise Exception("Cancelled")
+        lyrics_path = job_folder / "lyrics.txt"
+        if cached and cached.get('transcribed_lyrics'):
+            with open(lyrics_path, 'w', encoding='utf-8') as f:
+                json.dump(cached['transcribed_lyrics'], f, indent=4, ensure_ascii=False)
+            self._log(f"  ✓ Using cached lyrics ({len(cached['transcribed_lyrics'])} segments)")
+        elif not lyrics_path.exists():
+            self._log(f"  Transcribing ({Config.WHISPER_MODEL})...")
+            transcribe_audio(str(job_folder), song_title)
+            self._log("  ✓ Transcription complete")
+        else:
+            self._log("  ✓ Lyrics exist")
+        
+        # Image & Colors
+        image_path = job_folder / "cover.png"
+        colors = ['#ffffff', '#000000']
+        
+        if needs_image:
+            if self.cancel_requested: raise Exception("Cancelled")
+            if cached and cached.get('genius_image_url'):
+                if not image_path.exists():
+                    self._log("  Downloading cached image...")
+                    download_image(str(job_folder), cached['genius_image_url'])
+                self._log("  ✓ Using cached image")
+            elif not image_path.exists():
+                self._log("  Fetching cover image...")
+                result = fetch_genius_image(song_title, str(job_folder))
+                if result:
+                    self._log("  ✓ Cover downloaded")
+                else:
+                    self._log("  ⚠ No cover found")
+            else:
+                self._log("  ✓ Cover exists")
+            
+            if self.cancel_requested: raise Exception("Cancelled")
+            if image_path.exists():
+                if cached and cached.get('colors'):
+                    colors = cached['colors']
+                    self._log(f"  ✓ Using cached colors")
+                else:
+                    self._log("  Extracting colors...")
+                    colors = extract_colors(str(job_folder))
+                    self._log(f"  ✓ Colors: {', '.join(colors)}")
+        
+        # Read lyrics data
+        with open(lyrics_path, 'r', encoding='utf-8') as f:
+            lyrics_data = json.load(f)
+        
+        # Save job data
+        job_data = {
+            "job_id": job_number,
+            "song_title": song_title,
+            "youtube_url": youtube_url,
+            "start_time": start_time,
+            "end_time": end_time,
+            "template": template,
+            "audio_trimmed": str(job_folder / "audio_trimmed.wav"),
+            "cover_image": str(image_path) if image_path.exists() else None,
+            "colors": colors,
+            "lyrics_file": str(lyrics_path),
+            "beats": beats,
+            "created_at": datetime.now().isoformat()
+        }
+        
+        with open(job_folder / "job_data.json", 'w') as f:
+            json.dump(job_data, f, indent=4)
+        
+        # Save to database if not cached (only in manual mode to avoid duplicates)
+        if not cached and not self.use_smart_picker:
+            self._log("  Saving to database...")
+            self.song_db.add_song(
+                song_title=song_title,
+                youtube_url=youtube_url,
+                start_time=start_time,
+                end_time=end_time,
+                genius_image_url=None,
+                transcribed_lyrics=lyrics_data,
+                colors=colors,
+                beats=beats
+            )
+        elif cached and not self.use_smart_picker:
+            self.song_db.mark_song_used(song_title)
+        
+        self._log(f"  ✓ Job {job_number} complete")
+        
+        if return_data:
+            return job_data, job_folder
+        return None
 
 
 def main():
