@@ -43,6 +43,7 @@ if (typeof JSON === "undefined") {
 // -----------------------------
 var JOBS_PATH = "{{JOBS_PATH}}";
 var TEMPLATE_PATH = "{{TEMPLATE_PATH}}";
+var AUTO_RENDER = "{{AUTO_RENDER}}";
 
 // -----------------------------
 // MAIN
@@ -56,12 +57,15 @@ function main() {
             $.writeln("Opened template: " + TEMPLATE_PATH);
         } else {
             alert("Template file not found:\n" + TEMPLATE_PATH);
+            writeErrorLog("Template file not found: " + TEMPLATE_PATH);
             return;
         }
     }
     
-    // Keep AE open after script runs
-    app.exitAfterLaunchAndEval = false;
+    // Keep AE open after script runs (unless auto-render)
+    if (AUTO_RENDER !== "true") {
+        app.exitAfterLaunchAndEval = false;
+    }
     
     app.beginUndoGroup("mono Batch Music Video Build");
 
@@ -223,8 +227,32 @@ function main() {
         }
     }
 
-    alert("MONO batch processing complete!\n\nReview in Render Queue, then click Render.");
     app.endUndoGroup();
+    
+    // Auto-render if flag is set
+    if (AUTO_RENDER === "true") {
+        if (app.project.renderQueue.numItems > 0) {
+            $.writeln("AUTO_RENDER: Starting render...");
+            app.project.renderQueue.render();
+            $.writeln("AUTO_RENDER: Render complete.");
+        } else {
+            $.writeln("AUTO_RENDER: No items in render queue.");
+            writeErrorLog("No items in render queue");
+        }
+        app.quit();
+    } else {
+        alert("MONO batch processing complete!\n\nReview in Render Queue, then click Render.");
+    }
+}
+
+// Write error log for batch processing
+function writeErrorLog(message) {
+    if (JOBS_PATH.indexOf("{{") === -1 && JOBS_PATH !== "") {
+        var errorFile = new File(JOBS_PATH + "/batch_error.txt");
+        errorFile.open("w");
+        errorFile.write(message);
+        errorFile.close();
+    }
 }
 
 

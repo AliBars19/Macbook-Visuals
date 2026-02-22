@@ -530,11 +530,50 @@ class AppollovaApp:
     def _create_inject_tab(self):
         """Create the JSX Injection tab"""
         
-        content = ttk.Frame(self.inject_tab, padding="20")
-        content.pack(fill=tk.BOTH, expand=True)
+        # Create outer frame to hold canvas and scrollbar
+        outer_frame = ttk.Frame(self.inject_tab)
+        outer_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Create canvas and scrollbar for scrolling
+        inject_canvas = tk.Canvas(outer_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(outer_frame, orient="vertical", command=inject_canvas.yview)
+        scrollable_frame = ttk.Frame(inject_canvas, padding="20")
+        
+        # Create window and store the ID
+        canvas_window = inject_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        
+        # Configure scroll region when frame size changes
+        def configure_scroll(event):
+            inject_canvas.configure(scrollregion=inject_canvas.bbox("all"))
+        scrollable_frame.bind("<Configure>", configure_scroll)
+        
+        # Resize the canvas window width when canvas is resized
+        def configure_canvas(event):
+            inject_canvas.itemconfig(canvas_window, width=event.width)
+        inject_canvas.bind("<Configure>", configure_canvas)
+        
+        inject_canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Enable mousewheel scrolling only when mouse is over this canvas
+        def _on_mousewheel_inject(event):
+            inject_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        def _bind_mousewheel_inject(event):
+            inject_canvas.bind_all("<MouseWheel>", _on_mousewheel_inject)
+        
+        def _unbind_mousewheel_inject(event):
+            inject_canvas.unbind_all("<MouseWheel>")
+        
+        inject_canvas.bind("<Enter>", _bind_mousewheel_inject)
+        inject_canvas.bind("<Leave>", _unbind_mousewheel_inject)
+        
+        scrollbar.pack(side="right", fill="y")
+        inject_canvas.pack(side="left", fill="both", expand=True)
+        
+        content = scrollable_frame
         
         # === TEMPLATE SELECTION ===
-        template_frame = ttk.LabelFrame(content, text="Select Template to Inject", style='Section.TLabelframe', padding="15")
+        template_frame = ttk.LabelFrame(content, text="Individual Template Injection", style='Section.TLabelframe', padding="15")
         template_frame.pack(fill=tk.X, pady=(0, 20))
         
         self.inject_template_var = tk.StringVar(value="aurora")
@@ -586,7 +625,7 @@ class AppollovaApp:
         refresh_row = ttk.Frame(status_frame)
         refresh_row.pack(fill=tk.X, pady=(15, 0))
         
-        ttk.Button(refresh_row, text="🔄 Refresh Status", command=self._update_inject_status).pack(side=tk.LEFT)
+        ttk.Button(refresh_row, text="Refresh Status", command=self._update_inject_status).pack(side=tk.LEFT)
         
         # Install path info (for debugging)
         path_row = ttk.Frame(status_frame)
@@ -596,34 +635,127 @@ class AppollovaApp:
         
         # === INJECT BUTTON ===
         button_frame = ttk.Frame(content)
-        button_frame.pack(fill=tk.X, pady=(20, 0))
+        button_frame.pack(fill=tk.X, pady=(10, 0))
         
-        self.inject_btn = ttk.Button(button_frame, text="🎬 Launch After Effects & Inject", 
+        self.inject_btn = ttk.Button(button_frame, text="Launch After Effects & Inject", 
                                      style='Inject.TButton', command=self._run_injection)
         self.inject_btn.pack(side=tk.LEFT)
         
         # Info text
         info_frame = ttk.Frame(content)
-        info_frame.pack(fill=tk.X, pady=(20, 0))
+        info_frame.pack(fill=tk.X, pady=(10, 0))
         
         info_text = (
-            "This will:\n"
-            "1. Launch Adobe After Effects\n"
-            "2. Open the selected template file\n"
-            "3. Run the JSX injection script\n"
-            "4. Populate all job comps with your data\n\n"
-            "After injection, review the comps and add to render queue."
+            "This will launch AE, open the template, and inject job data.\n"
+            "After injection, review the comps and manually add to render queue."
         )
         ttk.Label(info_frame, text=info_text, foreground='#666666', justify=tk.LEFT).pack(anchor=tk.W)
         
+        # === BATCH RENDER ALL SECTION ===
+        batch_frame = ttk.LabelFrame(content, text="Batch Render All Templates", style='Section.TLabelframe', padding="15")
+        batch_frame.pack(fill=tk.X, pady=(20, 0))
+        
+        # Batch status header
+        ttk.Label(batch_frame, text="Templates Ready:", font=('Segoe UI', 9, 'bold')).pack(anchor=tk.W)
+        
+        # Status for each template
+        self.batch_status_labels = {}
+        for name, value, desc in templates:
+            row = ttk.Frame(batch_frame)
+            row.pack(fill=tk.X, pady=2)
+            
+            self.batch_status_labels[value] = ttk.Label(row, text=f"  {name}: Checking...", style='Status.TLabel')
+            self.batch_status_labels[value].pack(side=tk.LEFT)
+        
+        # Batch progress section
+        progress_frame = ttk.Frame(batch_frame)
+        progress_frame.pack(fill=tk.X, pady=(15, 10))
+        
+        self.batch_status_var = tk.StringVar(value="Status: Idle")
+        self.batch_status_label = ttk.Label(progress_frame, textvariable=self.batch_status_var, font=('Segoe UI', 9))
+        self.batch_status_label.pack(anchor=tk.W)
+        
+        self.batch_progress_var = tk.DoubleVar(value=0)
+        self.batch_progress = ttk.Progressbar(progress_frame, variable=self.batch_progress_var, maximum=100, length=400)
+        self.batch_progress.pack(fill=tk.X, pady=(5, 5))
+        
+        self.batch_current_var = tk.StringVar(value="")
+        self.batch_current_label = ttk.Label(progress_frame, textvariable=self.batch_current_var, foreground='#666666')
+        self.batch_current_label.pack(anchor=tk.W)
+        
+        # Render All button
+        batch_btn_frame = ttk.Frame(batch_frame)
+        batch_btn_frame.pack(fill=tk.X, pady=(10, 0))
+        
+        self.render_all_btn = ttk.Button(batch_btn_frame, text="Render All", 
+                                          style='Inject.TButton', command=self._start_batch_render)
+        self.render_all_btn.pack(side=tk.LEFT)
+        
+        self.batch_cancel_btn = ttk.Button(batch_btn_frame, text="Cancel", 
+                                            command=self._cancel_batch_render, state='disabled')
+        self.batch_cancel_btn.pack(side=tk.LEFT, padx=(10, 0))
+        
+        # Batch info
+        batch_info = (
+            "Renders all templates with jobs sequentially (Aurora → Mono → Onyx).\n"
+            "Each template will auto-inject, render, then close before the next starts.\n"
+            "Requires at least 2 templates with jobs to enable."
+        )
+        ttk.Label(batch_frame, text=batch_info, foreground='#666666', justify=tk.LEFT).pack(anchor=tk.W, pady=(10, 0))
+        
+        # Batch render state
+        self.batch_render_active = False
+        self.batch_render_cancelled = False
+        self.batch_results = {}
+        
         # Update status
         self._update_inject_status()
+        self._update_batch_status()
     
     def _create_settings_tab(self):
         """Create the Settings tab"""
         
-        content = ttk.Frame(self.settings_tab, padding="20")
-        content.pack(fill=tk.BOTH, expand=True)
+        # Create outer frame to hold canvas and scrollbar
+        outer_frame = ttk.Frame(self.settings_tab)
+        outer_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Create canvas and scrollbar for scrolling
+        settings_canvas = tk.Canvas(outer_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(outer_frame, orient="vertical", command=settings_canvas.yview)
+        scrollable_frame = ttk.Frame(settings_canvas, padding="20")
+        
+        # Create window and store the ID
+        canvas_window = settings_canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        
+        # Configure scroll region when frame size changes
+        def configure_scroll(event):
+            settings_canvas.configure(scrollregion=settings_canvas.bbox("all"))
+        scrollable_frame.bind("<Configure>", configure_scroll)
+        
+        # Resize the canvas window width when canvas is resized
+        def configure_canvas(event):
+            settings_canvas.itemconfig(canvas_window, width=event.width)
+        settings_canvas.bind("<Configure>", configure_canvas)
+        
+        settings_canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Enable mousewheel scrolling only when mouse is over this canvas
+        def _on_mousewheel_settings(event):
+            settings_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        def _bind_mousewheel_settings(event):
+            settings_canvas.bind_all("<MouseWheel>", _on_mousewheel_settings)
+        
+        def _unbind_mousewheel_settings(event):
+            settings_canvas.unbind_all("<MouseWheel>")
+        
+        settings_canvas.bind("<Enter>", _bind_mousewheel_settings)
+        settings_canvas.bind("<Leave>", _unbind_mousewheel_settings)
+        
+        scrollbar.pack(side="right", fill="y")
+        settings_canvas.pack(side="left", fill="both", expand=True)
+        
+        content = scrollable_frame
         
         # === AFTER EFFECTS ===
         ae_frame = ttk.LabelFrame(content, text="Adobe After Effects", style='Section.TLabelframe', padding="15")
@@ -671,7 +803,7 @@ class AppollovaApp:
         button_frame = ttk.Frame(content)
         button_frame.pack(fill=tk.X, pady=(20, 0))
         
-        ttk.Button(button_frame, text="💾 Save Settings", command=self._save_all_settings).pack(side=tk.LEFT)
+        ttk.Button(button_frame, text="Save Settings", command=self._save_all_settings).pack(side=tk.LEFT)
         
         # === PATHS INFO ===
         paths_frame = ttk.LabelFrame(content, text="Installation Paths (Read-Only)", style='Section.TLabelframe', padding="15")
@@ -691,6 +823,7 @@ Database: {DATABASE_DIR}"""
         selected_tab = self.notebook.index(self.notebook.select())
         if selected_tab == 1:  # JSX Injection tab
             self._update_inject_status()
+            self._update_batch_status()
     
     def _on_template_change(self, *args):
         """Update output path when template changes"""
@@ -884,7 +1017,7 @@ Database: {DATABASE_DIR}"""
         except Exception as e:
             messagebox.showerror("Error", f"Failed to launch After Effects:\n{e}")
     
-    def _prepare_jsx_with_path(self, jsx_path, jobs_dir, template_path):
+    def _prepare_jsx_with_path(self, jsx_path, jobs_dir, template_path, auto_render=False):
         """Inject the jobs path into the JSX file"""
         with open(jsx_path, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -892,9 +1025,247 @@ Database: {DATABASE_DIR}"""
         # Replace placeholder paths
         content = content.replace('{{JOBS_PATH}}', str(jobs_dir).replace('\\', '/'))
         content = content.replace('{{TEMPLATE_PATH}}', str(template_path).replace('\\', '/'))
+        content = content.replace('{{AUTO_RENDER}}', 'true' if auto_render else 'false')
         
         with open(jsx_path, 'w', encoding='utf-8') as f:
             f.write(content)
+    
+    def _update_batch_status(self):
+        """Update the batch render status for all templates"""
+        templates_ready = []
+        ae_path = self.settings.get('after_effects_path')
+        ae_ok = ae_path and Path(ae_path).exists()
+        
+        for template in ['aurora', 'mono', 'onyx']:
+            jobs_dir = JOBS_DIRS.get(template)
+            template_path = TEMPLATE_PATHS.get(template)
+            jsx_name = JSX_SCRIPTS.get(template)
+            
+            # Check all prerequisites (same as individual render)
+            jobs_ok = jobs_dir and jobs_dir.exists() and list(jobs_dir.glob("job_*"))
+            template_ok = template_path and template_path.exists()
+            
+            # Check JSX script exists
+            jsx_source = BUNDLED_JSX_DIR / jsx_name if jsx_name else None
+            if jsx_source and not jsx_source.exists():
+                jsx_source = INSTALL_DIR / "scripts" / "JSX" / jsx_name
+            jsx_ok = jsx_source and jsx_source.exists()
+            
+            if jobs_ok:
+                job_count = len(list(jobs_dir.glob("job_*")))
+                if template_ok and jsx_ok:
+                    self.batch_status_labels[template].config(
+                        text=f"  {template.capitalize()}: {job_count} jobs ready",
+                        style='Success.TLabel'
+                    )
+                    templates_ready.append(template)
+                elif not template_ok:
+                    self.batch_status_labels[template].config(
+                        text=f"  {template.capitalize()}: {job_count} jobs (no template file)",
+                        style='Warning.TLabel'
+                    )
+                elif not jsx_ok:
+                    self.batch_status_labels[template].config(
+                        text=f"  {template.capitalize()}: {job_count} jobs (JSX script missing)",
+                        style='Warning.TLabel'
+                    )
+            else:
+                self.batch_status_labels[template].config(
+                    text=f"  {template.capitalize()}: No jobs",
+                    style='Status.TLabel'
+                )
+        
+        # Enable/disable Render All button (need at least 2 templates ready + AE)
+        if len(templates_ready) >= 2 and ae_ok and not self.batch_render_active:
+            self.render_all_btn.config(state='normal')
+        else:
+            self.render_all_btn.config(state='disabled')
+        
+        return templates_ready
+    
+    def _start_batch_render(self):
+        """Start the batch render process"""
+        templates_ready = self._update_batch_status()
+        
+        if len(templates_ready) < 2:
+            messagebox.showerror("Error", "Need at least 2 templates with jobs to use Render All.")
+            return
+        
+        # Build summary
+        summary_lines = ["Ready to render:"]
+        for t in templates_ready:
+            jobs_dir = JOBS_DIRS.get(t)
+            job_count = len(list(jobs_dir.glob("job_*")))
+            summary_lines.append(f"  - {t.capitalize()}: {job_count} jobs")
+        summary_lines.append("")
+        summary_lines.append("This will take a while. AE will open, inject, render,")
+        summary_lines.append("and close for each template automatically.")
+        summary_lines.append("")
+        summary_lines.append("Continue?")
+        
+        if not messagebox.askyesno("Confirm Batch Render", "\n".join(summary_lines)):
+            return
+        
+        # Start batch render in thread
+        self.batch_render_active = True
+        self.batch_render_cancelled = False
+        self.batch_results = {}
+        
+        # Update UI
+        self.render_all_btn.config(state='disabled')
+        self.batch_cancel_btn.config(state='normal')
+        self.inject_btn.config(state='disabled')
+        
+        # Start thread
+        thread = threading.Thread(target=self._batch_render_thread, args=(templates_ready,), daemon=True)
+        thread.start()
+    
+    def _cancel_batch_render(self):
+        """Cancel the batch render process"""
+        if messagebox.askyesno("Cancel Batch Render", "Are you sure you want to cancel?\n\nThe current render will complete, but no more templates will be processed."):
+            self.batch_render_cancelled = True
+            self.batch_status_var.set("Status: Cancelling after current render...")
+    
+    def _batch_render_thread(self, templates):
+        """Thread function for batch rendering"""
+        total = len(templates)
+        
+        for idx, template in enumerate(templates):
+            if self.batch_render_cancelled:
+                self.root.after(0, lambda: self._batch_update_progress(
+                    f"Status: Cancelled",
+                    (idx / total) * 100,
+                    "Batch render was cancelled"
+                ))
+                break
+            
+            # Update progress
+            self.root.after(0, lambda t=template, i=idx: self._batch_update_progress(
+                f"Status: Rendering {t.capitalize()} ({i+1}/{total})",
+                (i / total) * 100,
+                f"Launching After Effects for {t.capitalize()}..."
+            ))
+            
+            # Run injection + render for this template
+            success, error_msg = self._run_batch_template(template)
+            
+            self.batch_results[template] = {
+                'success': success,
+                'error': error_msg
+            }
+            
+            if success:
+                self.root.after(0, lambda t=template: self._batch_update_template_status(
+                    t, f"  {t.capitalize()}: Complete", 'Success.TLabel'
+                ))
+            else:
+                self.root.after(0, lambda t=template, e=error_msg: self._batch_update_template_status(
+                    t, f"  {t.capitalize()}: Failed - {e}", 'Error.TLabel'
+                ))
+        
+        # Complete
+        self.root.after(0, self._batch_render_complete)
+    
+    def _batch_update_progress(self, status, progress, current):
+        """Update batch progress UI (called from main thread)"""
+        self.batch_status_var.set(status)
+        self.batch_progress_var.set(progress)
+        self.batch_current_var.set(current)
+    
+    def _batch_update_template_status(self, template, text, style):
+        """Update individual template status (called from main thread)"""
+        self.batch_status_labels[template].config(text=text, style=style)
+    
+    def _run_batch_template(self, template):
+        """Run injection + render for a single template. Returns (success, error_msg)"""
+        ae_path = self.settings.get('after_effects_path')
+        template_path = TEMPLATE_PATHS.get(template)
+        jobs_dir = JOBS_DIRS.get(template)
+        jsx_name = JSX_SCRIPTS.get(template)
+        
+        try:
+            # Find JSX source
+            jsx_source = BUNDLED_JSX_DIR / jsx_name
+            if not jsx_source.exists():
+                jsx_source = INSTALL_DIR / "scripts" / "JSX" / jsx_name
+            
+            if not jsx_source.exists():
+                return False, f"JSX not found: {jsx_name}"
+            
+            # Copy to temp and inject paths with AUTO_RENDER=true
+            temp_dir = Path(tempfile.gettempdir()) / "Apollova"
+            temp_dir.mkdir(exist_ok=True)
+            temp_jsx = temp_dir / f"batch_{jsx_name}"
+            
+            shutil.copy(jsx_source, temp_jsx)
+            self._prepare_jsx_with_path(temp_jsx, jobs_dir, template_path, auto_render=True)
+            
+            # Create error log path (JSX will write here if error occurs)
+            error_log = jobs_dir / "batch_error.txt"
+            if error_log.exists():
+                error_log.unlink()
+            
+            # Launch AE and wait for it to complete
+            cmd = [ae_path, "-r", str(temp_jsx)]
+            
+            self.root.after(0, lambda: self._batch_update_progress(
+                self.batch_status_var.get(),
+                self.batch_progress_var.get(),
+                f"Rendering {template.capitalize()}... (this may take a while)"
+            ))
+            
+            process = subprocess.Popen(cmd)
+            
+            # Wait for process to complete
+            process.wait()
+            
+            # Check for error log
+            if error_log.exists():
+                with open(error_log, 'r') as f:
+                    error_msg = f.read().strip()
+                return False, error_msg
+            
+            return True, None
+            
+        except Exception as e:
+            return False, str(e)
+    
+    def _batch_render_complete(self):
+        """Called when batch render is complete"""
+        self.batch_render_active = False
+        
+        # Update UI
+        self.render_all_btn.config(state='normal')
+        self.batch_cancel_btn.config(state='disabled')
+        self.inject_btn.config(state='normal')
+        self.batch_progress_var.set(100)
+        
+        # Build results summary
+        success_count = sum(1 for r in self.batch_results.values() if r['success'])
+        fail_count = sum(1 for r in self.batch_results.values() if not r['success'])
+        
+        if self.batch_render_cancelled:
+            self.batch_status_var.set("Status: Cancelled")
+            self.batch_current_var.set(f"Completed {success_count} template(s) before cancellation")
+        else:
+            self.batch_status_var.set("Status: Complete")
+            self.batch_current_var.set(f"Success: {success_count}, Failed: {fail_count}")
+        
+        # Show summary dialog
+        summary_lines = ["Batch Render Complete\n"]
+        for template, result in self.batch_results.items():
+            if result['success']:
+                summary_lines.append(f"{template.capitalize()}: Success")
+            else:
+                summary_lines.append(f"{template.capitalize()}: Failed - {result['error']}")
+        
+        if self.batch_render_cancelled:
+            summary_lines.append("\nBatch was cancelled by user.")
+        
+        messagebox.showinfo("Batch Render Complete", "\n".join(summary_lines))
+        
+        # Refresh status
+        self._update_batch_status()
     
     def _check_existing_jobs(self):
         """Check if job folders already exist"""
