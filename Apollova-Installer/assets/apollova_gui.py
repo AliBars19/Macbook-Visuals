@@ -18,16 +18,18 @@ from datetime import datetime
 
 # Determine if we're running as a bundled exe or script
 if getattr(sys, 'frozen', False):
-    # Running as compiled exe
-    INSTALL_DIR = Path(sys.executable).parent
-    BUNDLED_JSX_DIR = Path(sys._MEIPASS) / "scripts" / "JSX"
+    # Running as compiled exe (launcher)
+    BASE_DIR = Path(sys.executable).parent
+    ASSETS_DIR = BASE_DIR / "assets"
+    BUNDLED_JSX_DIR = ASSETS_DIR / "scripts" / "JSX"
 else:
-    # Running as script
-    INSTALL_DIR = Path(__file__).parent
-    BUNDLED_JSX_DIR = INSTALL_DIR / "scripts" / "JSX"
+    # Running as script from assets folder
+    ASSETS_DIR = Path(__file__).parent
+    BASE_DIR = ASSETS_DIR.parent  # Go up from assets to main folder
+    BUNDLED_JSX_DIR = ASSETS_DIR / "scripts" / "JSX"
 
 # Add scripts directory to path for imports
-sys.path.insert(0, str(INSTALL_DIR))
+sys.path.insert(0, str(ASSETS_DIR))
 
 # Import processing modules
 from scripts.config import Config
@@ -39,14 +41,15 @@ from scripts.genius_processing import fetch_genius_image
 from scripts.smart_picker import SmartSongPicker
 
 
-# Directory structure constants
-TEMPLATES_DIR = INSTALL_DIR / "templates"
-AURORA_JOBS_DIR = INSTALL_DIR / "Apollova-Aurora" / "jobs"
-MONO_JOBS_DIR = INSTALL_DIR / "Apollova-Mono" / "jobs"
-ONYX_JOBS_DIR = INSTALL_DIR / "Apollova-Onyx" / "jobs"
-DATABASE_DIR = INSTALL_DIR / "database"
-WHISPER_DIR = INSTALL_DIR / "whisper_models"
-SETTINGS_FILE = INSTALL_DIR / "settings.json"
+# Directory structure constants (relative to BASE_DIR, not assets)
+INSTALL_DIR = BASE_DIR  # For compatibility with rest of code
+TEMPLATES_DIR = BASE_DIR / "templates"
+AURORA_JOBS_DIR = BASE_DIR / "Apollova-Aurora" / "jobs"
+MONO_JOBS_DIR = BASE_DIR / "Apollova-Mono" / "jobs"
+ONYX_JOBS_DIR = BASE_DIR / "Apollova-Onyx" / "jobs"
+DATABASE_DIR = BASE_DIR / "database"
+WHISPER_DIR = BASE_DIR / "whisper_models"
+SETTINGS_FILE = BASE_DIR / "settings.json"
 
 # Template paths
 TEMPLATE_PATHS = {
