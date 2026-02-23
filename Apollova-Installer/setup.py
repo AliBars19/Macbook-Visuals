@@ -176,9 +176,13 @@ class SetupWizard:
         """Find a Python 3.10+ executable."""
         candidates = [
             "python", "python3",
+            r"C:\Python314\python.exe",
+            r"C:\Python313\python.exe",
             r"C:\Python312\python.exe",
             r"C:\Python311\python.exe",
             r"C:\Python310\python.exe",
+            os.path.expanduser(r"~\AppData\Local\Programs\Python\Python314\python.exe"),
+            os.path.expanduser(r"~\AppData\Local\Programs\Python\Python313\python.exe"),
             os.path.expanduser(r"~\AppData\Local\Programs\Python\Python312\python.exe"),
             os.path.expanduser(r"~\AppData\Local\Programs\Python\Python311\python.exe"),
             os.path.expanduser(r"~\AppData\Local\Programs\Python\Python310\python.exe"),
