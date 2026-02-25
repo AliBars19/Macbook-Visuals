@@ -353,6 +353,7 @@ class AppolovaApp(QMainWindow):
         Config.WHISPER_MODEL = self.settings.get('whisper_model', 'small')
         self._config_warnings = Config.validate()
 
+        self._job_queue             = []   # list of {title, url, start, end}
         self.is_processing          = False
         self.cancel_requested       = False
         self.use_smart_picker       = False
@@ -503,6 +504,8 @@ class AppolovaApp(QMainWindow):
         manual_w = QWidget()
         ml = QVBoxLayout(manual_w)
         ml.setSpacing(6)
+
+        # ── Input fields ──────────────────────────────────────────────────────
         ml.addWidget(QLabel("Song Title (Artist - Song):"))
         self.title_edit = QLineEdit()
         self.title_edit.setPlaceholderText("e.g. Drake - God's Plan")
@@ -526,6 +529,51 @@ class AppolovaApp(QMainWindow):
         tr.addWidget(self.end_edit)
         tr.addStretch()
         ml.addLayout(tr)
+
+        # ── Add to queue button ───────────────────────────────────────────────
+        add_row = QHBoxLayout()
+        self.add_job_btn = QPushButton("＋  Add Job to Queue")
+        self.add_job_btn.clicked.connect(self._add_job_to_queue)
+        add_row.addWidget(self.add_job_btn)
+        add_row.addStretch()
+        ml.addLayout(add_row)
+
+        # ── Separator ─────────────────────────────────────────────────────────
+        q_sep = QFrame()
+        q_sep.setFrameShape(QFrame.Shape.HLine)
+        q_sep.setStyleSheet("color:#313244; margin:4px 0;")
+        ml.addWidget(q_sep)
+
+        # ── Queue header with counter ─────────────────────────────────────────
+        q_hdr = QHBoxLayout()
+        q_hdr.addWidget(QLabel("Job Queue:"))
+        q_hdr.addStretch()
+        self.queue_counter_label = _label("0 / 12", "muted")
+        q_hdr.addWidget(self.queue_counter_label)
+        ml.addLayout(q_hdr)
+
+        # ── Queue list ────────────────────────────────────────────────────────
+        self.queue_list = QListWidget()
+        self.queue_list.setMinimumHeight(90)
+        self.queue_list.setMaximumHeight(120)
+        self.queue_list.itemSelectionChanged.connect(
+            lambda: self.remove_job_btn.setEnabled(
+                bool(self.queue_list.selectedItems()) and not self.is_processing))
+        ml.addWidget(self.queue_list)
+
+        # ── Queue action buttons ──────────────────────────────────────────────
+        q_btn_row = QHBoxLayout()
+        self.remove_job_btn = QPushButton("Remove Selected")
+        self.remove_job_btn.setEnabled(False)
+        self.remove_job_btn.clicked.connect(self._remove_from_queue)
+        q_btn_row.addWidget(self.remove_job_btn)
+        self.clear_queue_btn = QPushButton("Clear Queue")
+        self.clear_queue_btn.setEnabled(False)
+        self.clear_queue_btn.clicked.connect(self._clear_queue)
+        q_btn_row.addWidget(self.clear_queue_btn)
+        q_btn_row.addStretch()
+        ml.addLayout(q_btn_row)
+
         ml.addStretch()
         self.song_tabs.addTab(manual_w, "  ✏️ Manual Entry  ")
 
@@ -562,6 +610,7 @@ class AppolovaApp(QMainWindow):
         self.jobs_combo.addItems(["1", "3", "6", "12"])
         self.jobs_combo.setCurrentText("12")
         self.jobs_combo.setFixedWidth(70)
+        self.jobs_combo.currentIndexChanged.connect(self._on_jobs_count_changed)
         js_lay.addWidget(self.jobs_combo)
         js_lay.addSpacing(20)
         js_lay.addWidget(QLabel("Whisper Model:"))
@@ -600,6 +649,7 @@ class AppolovaApp(QMainWindow):
         self.generate_btn = QPushButton("🚀 Generate Jobs")
         self.generate_btn.setObjectName("primary")
         self.generate_btn.clicked.connect(self._start_generation)
+        self.generate_btn.setEnabled(False)   # enabled when queue is full (manual) or always (smart)
         btn_row.addWidget(self.generate_btn)
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.setEnabled(False)
@@ -807,6 +857,99 @@ class AppolovaApp(QMainWindow):
         self.use_smart_picker = (index == 1)
         if self.use_smart_picker:
             self._refresh_smart_picker_stats()
+        self._update_generate_btn_state()
+
+    def _on_jobs_count_changed(self, _index):
+        self._update_queue_counter()
+        self._update_generate_btn_state()
+        if self.use_smart_picker:
+            self._refresh_smart_picker_stats()
+
+    def _update_queue_counter(self):
+        n     = int(self.jobs_combo.currentText())
+        count = len(self._job_queue)
+        self.queue_counter_label.setText(f"{count} / {n}")
+
+    def _update_generate_btn_state(self):
+        if self.is_processing:
+            self.generate_btn.setEnabled(False)
+            return
+        if self.use_smart_picker:
+            self.generate_btn.setEnabled(True)
+        else:
+            n = int(self.jobs_combo.currentText())
+            self.generate_btn.setEnabled(len(self._job_queue) >= n)
+
+    def _add_job_to_queue(self):
+        title = self.title_edit.text().strip()
+        url   = self.url_edit.text().strip()
+        start = self.start_edit.text().strip()
+        end   = self.end_edit.text().strip()
+        n     = int(self.jobs_combo.currentText())
+
+        if len(self._job_queue) >= n:
+            QMessageBox.warning(self, "Queue Full",
+                f"Queue already has {n} jobs.\n"
+                "Increase the job count or clear the queue first.")
+            return
+
+        if not title:
+            QMessageBox.critical(self, "Missing Info", "Song title is required.")
+            return
+
+        cached = self.song_db.get_song(title)
+        if not url and not cached:
+            QMessageBox.critical(self, "Missing Info",
+                "YouTube URL is required for songs not in the database.")
+            return
+
+        try:
+            sp = start.split(':'); ep = end.split(':')
+            if len(sp) != 2 or len(ep) != 2:
+                raise ValueError
+            if int(sp[0]) * 60 + int(sp[1]) >= int(ep[0]) * 60 + int(ep[1]):
+                QMessageBox.critical(self, "Invalid Time", "End time must be after start time.")
+                return
+        except ValueError:
+            QMessageBox.critical(self, "Invalid Time", "Use MM:SS format (e.g. 00:30).")
+            return
+
+        self._job_queue.append({'title': title, 'url': url, 'start': start, 'end': end})
+        self._rebuild_queue_list()
+        self._update_queue_counter()
+        self._update_generate_btn_state()
+
+        # Clear fields for next entry
+        self.title_edit.clear()
+        self.url_edit.clear()
+        self.start_edit.setText("00:00")
+        self.end_edit.setText("01:01")
+        self.db_match_label.setText("")
+
+    def _remove_from_queue(self):
+        row = self.queue_list.currentRow()
+        if row < 0:
+            return
+        self._job_queue.pop(row)
+        self._rebuild_queue_list()
+        self._update_queue_counter()
+        self._update_generate_btn_state()
+
+    def _clear_queue(self):
+        if not self._job_queue:
+            return
+        self._job_queue.clear()
+        self._rebuild_queue_list()
+        self._update_queue_counter()
+        self._update_generate_btn_state()
+
+    def _rebuild_queue_list(self):
+        self.queue_list.clear()
+        for i, job in enumerate(self._job_queue, 1):
+            self.queue_list.addItem(
+                f"{i:2}. {job['title'][:35]:<35}  {job['start']} → {job['end']}")
+        self.clear_queue_btn.setEnabled(bool(self._job_queue))
+        self.remove_job_btn.setEnabled(False)
 
     def _job_template(self):
         btn = self.job_tpl_group.checkedButton()
@@ -1236,20 +1379,11 @@ class AppolovaApp(QMainWindow):
                 if not songs:
                     errors.append("No songs available in database.")
         else:
-            if not self.title_edit.text().strip():
-                errors.append("Song title is required")
-            if not self.url_edit.text().strip():
-                if not self.song_db.get_song(self.title_edit.text().strip()):
-                    errors.append("YouTube URL is required")
-            s, e = self.start_edit.text().strip(), self.end_edit.text().strip()
-            try:
-                sp = s.split(':'); ep = e.split(':')
-                if len(sp) != 2 or len(ep) != 2:
-                    raise ValueError
-                if int(sp[0]) * 60 + int(sp[1]) >= int(ep[0]) * 60 + int(ep[1]):
-                    errors.append("End time must be after start time")
-            except Exception:
-                errors.append("Invalid time format (use MM:SS)")
+            n = int(self.jobs_combo.currentText())
+            if len(self._job_queue) < n:
+                errors.append(
+                    f"Queue has {len(self._job_queue)} / {n} jobs. "
+                    "Add all jobs before generating.")
         if errors:
             QMessageBox.critical(self, "Validation Error", "\n".join(errors))
             return False
@@ -1257,10 +1391,13 @@ class AppolovaApp(QMainWindow):
 
     def _lock_inputs(self, lock):
         for w in [self.title_edit, self.url_edit, self.start_edit,
-                  self.end_edit, self.jobs_combo, self.whisper_combo]:
+                  self.end_edit, self.jobs_combo, self.whisper_combo,
+                  self.add_job_btn]:
             w.setEnabled(not lock)
         for btn in self.job_tpl_group.buttons():
             btn.setEnabled(not lock)
+        self.remove_job_btn.setEnabled(False)
+        self.clear_queue_btn.setEnabled(not lock and bool(self._job_queue))
 
     def _start_generation(self):
         if not self._validate_inputs():
@@ -1336,51 +1473,20 @@ class AppolovaApp(QMainWindow):
                     f"\n{'='*40}\n🎉 SUCCESS! {len(songs)} job(s) created!\n📂 {outd}\n"
                     "Next: Go to JSX Injection tab")
             else:
-                title = self.title_edit.text().strip()
-                url   = self.url_edit.text().strip()
-                st    = self.start_edit.text().strip()
-                et    = self.end_edit.text().strip()
-                self.signals.log.emit(f"Starting {num} job(s): {title} | {t.upper()}")
-                cached = self.song_db.get_song(title)
-                if cached:
-                    self.signals.log.emit("✓ Using cached data")
-                    url = cached['youtube_url']
-                    st  = cached['start_time']
-                    et  = cached['end_time']
+                total = len(self._job_queue)
+                self.signals.log.emit(f"Starting {total} queued job(s) | {t.upper()}")
                 outd.mkdir(parents=True, exist_ok=True)
-                job_data, job_folder = self._process_single_song(
-                    1, title, url, st, et, t, outd, return_data=True)
-                if num > 1:
-                    self.signals.log.emit(f"Creating {num-1} duplicate folders…")
-                    img = job_folder / "cover.png"
-                    for i in range(2, num + 1):
-                        dst = outd / f"job_{i:03}"
-                        dst.mkdir(parents=True, exist_ok=True)
-                        for fn in ['audio_trimmed.wav', 'lyrics.txt', 'beats.json']:
-                            src = job_folder / fn
-                            if src.exists():
-                                shutil.copy(src, dst / fn)
-                        for fn in ['mono_data.json', 'onyx_data.json']:
-                            src = job_folder / fn
-                            if src.exists():
-                                shutil.copy(src, dst / fn)
-                        if img.exists():
-                            shutil.copy(img, dst / "cover.png")
-                        data_file = {
-                            'aurora': dst / "lyrics.txt",
-                            'mono':   dst / "mono_data.json",
-                            'onyx':   dst / "onyx_data.json",
-                        }.get(t, dst / "lyrics.txt")
-                        jd = job_data.copy()
-                        jd.update({'job_id': i,
-                                   'audio_trimmed': str(dst / "audio_trimmed.wav"),
-                                   'cover_image': str(dst/"cover.png") if img.exists() else None,
-                                   'lyrics_file': str(data_file)})
-                        with open(dst / "job_data.json", 'w') as f:
-                            json.dump(jd, f, indent=4)
-                self.signals.progress.emit(100)
+                for idx, job in enumerate(self._job_queue, 1):
+                    if self.cancel_requested:
+                        raise Exception("Cancelled by user")
+                    self.signals.log.emit(
+                        f"\n{'='*40}\n📀 Job {idx}/{total}: {job['title'][:40]}")
+                    self._process_single_song(
+                        idx, job['title'], job['url'],
+                        job['start'], job['end'], t, outd)
+                    self.signals.progress.emit(idx / total * 100)
                 self.signals.log.emit(
-                    f"{'='*40}\n🎉 SUCCESS! {num} job(s) created!\n📂 {outd}\n"
+                    f"\n{'='*40}\n🎉 SUCCESS! {total} job(s) created!\n📂 {outd}\n"
                     "Next: Go to JSX Injection tab")
 
             self.signals.stats_refresh.emit()
@@ -1391,8 +1497,11 @@ class AppolovaApp(QMainWindow):
 
     def _on_generation_finished(self):
         self.is_processing = False
+        self._job_queue.clear()
+        self._rebuild_queue_list()
+        self._update_queue_counter()
         self._lock_inputs(False)
-        self.generate_btn.setEnabled(True)
+        self._update_generate_btn_state()
         self.cancel_btn.setEnabled(False)
         self._check_existing_jobs()
         QMessageBox.information(self, "Complete!",
@@ -1402,7 +1511,7 @@ class AppolovaApp(QMainWindow):
     def _on_generation_error(self, msg):
         self.is_processing = False
         self._lock_inputs(False)
-        self.generate_btn.setEnabled(True)
+        self._update_generate_btn_state()
         self.cancel_btn.setEnabled(False)
         self._check_existing_jobs()
         QMessageBox.critical(self, "Error", msg)
