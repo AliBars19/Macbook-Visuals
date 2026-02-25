@@ -7,6 +7,9 @@ Extraction strategy (triple-layer):
   2. BeautifulSoup HTML parsing (data-lyrics-container divs)
   3. Regex fallback (last resort for unusual page structures)
 """
+import random
+import time
+
 import requests
 import re
 import json
@@ -24,19 +27,48 @@ from scripts.config import Config
 
 
 # ============================================================================
-# Browser-like headers to prevent Genius from blocking or serving different HTML
+# #16: Rotating User-Agent to prevent Genius from blocking
 # ============================================================================
-BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-}
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+]
+
+
+def _browser_headers():
+    """Return browser-like headers with a randomly picked User-Agent (#16)."""
+    return {
+        "User-Agent": random.choice(_USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    }
+
+
+# ============================================================================
+# #15: Retry helper for Genius API requests
+# ============================================================================
+def _request_with_retry(method, url, retries=2, backoff=1.0, **kwargs):
+    """
+    Wrapper around requests with retry on connection errors and 5xx.
+    #15: 2 retries, 1s backoff, only on transient failures.
+    """
+    kwargs.setdefault("timeout", 10)
+    last_exc = None
+    for attempt in range(1 + retries):
+        try:
+            resp = requests.request(method, url, **kwargs)
+            if resp.status_code < 500:
+                return resp
+            # 5xx — retry
+            last_exc = requests.HTTPError(f"HTTP {resp.status_code}")
+        except (requests.ConnectionError, requests.Timeout) as e:
+            last_exc = e
+        if attempt < retries:
+            time.sleep(backoff)
+    raise last_exc
 
 
 # ============================================================================
@@ -55,11 +87,10 @@ def fetch_genius_image(song_title, job_folder):
     query = f"{title} {artist}" if artist else title
     
     try:
-        response = requests.get(
-            f"{Config.GENIUS_BASE_URL}/search",
+        response = _request_with_retry(
+            "GET", f"{Config.GENIUS_BASE_URL}/search",
             params={"q": query},
             headers=headers,
-            timeout=10
         )
         response.raise_for_status()
         data = response.json()
@@ -115,18 +146,16 @@ def fetch_genius_lyrics(song_title):
     url = None
     for query in queries:
         try:
-            response = requests.get(
-                f"{Config.GENIUS_BASE_URL}/search",
+            response = _request_with_retry(
+                "GET", f"{Config.GENIUS_BASE_URL}/search",
                 params={"q": query},
                 headers=headers,
-                timeout=10
             )
             response.raise_for_status()
             data = response.json()
-            
+
             hits = data.get("response", {}).get("hits", [])
             if hits:
-                # Try to find best match - prefer exact artist match
                 best_hit = _find_best_hit(hits, artist, title)
                 url = best_hit["result"]["url"]
                 print(f"  Genius match: {best_hit['result'].get('full_title', 'Unknown')}")
@@ -139,9 +168,9 @@ def fetch_genius_lyrics(song_title):
         print("  No Genius results found")
         return None
     
-    # Fetch lyrics page with browser headers
+    # Fetch lyrics page with rotating browser headers (#16)
     try:
-        html = requests.get(url, headers=BROWSER_HEADERS, timeout=15).text
+        html = _request_with_retry("GET", url, headers=_browser_headers(), timeout=15).text
     except Exception as e:
         print(f"  Failed to fetch Genius page: {e}")
         return None
@@ -385,9 +414,9 @@ def _clean_lyrics(text):
             "translations",
             "embed",
             "you might also like",
-            "see .* live",
-            r"^\d+$",  # Just numbers
-            "genius",
+            r"^see\s+.*\s+live\s*$",  # #6: Anchored — only whole-line "See X Live"
+            r"^\d+$",                  # Just numbers
+            r"^\s*genius\s*$",         # #6: Whole-line only — don't strip lyrics containing "genius"
         ]
         
         should_skip = False

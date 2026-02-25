@@ -89,6 +89,7 @@ REQUIRED_FILES = [
     "assets/scripts/config.py",
     "assets/scripts/audio_processing.py",
     "assets/scripts/image_processing.py",
+    "assets/scripts/whisper_common.py",
     "assets/scripts/lyric_processing.py",
     "assets/scripts/lyric_processing_mono.py",
     "assets/scripts/lyric_processing_onyx.py",

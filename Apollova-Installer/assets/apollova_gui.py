@@ -64,6 +64,7 @@ def _import_scripts():
 
     # Check files exist
     missing = [s for s in ["config","audio_processing","image_processing",
+                            "whisper_common",
                             "lyric_processing","lyric_processing_mono",
                             "lyric_processing_onyx","lyric_alignment",
                             "song_database","genius_processing","smart_picker"]
