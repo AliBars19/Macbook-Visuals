@@ -2,7 +2,7 @@
 # PyTorch with CUDA support for GPU-accelerated transcription
 # Adds approximately 1.5GB to installation
 
---extra-index-url https://download.pytorch.org/whl/cu118
+--extra-index-url https://download.pytorch.org/whl/cu121
 
 torch>=2.0.0
 torchaudio>=2.0.0

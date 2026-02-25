@@ -24,7 +24,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QIcon
 
 # ── Path resolution ───────────────────────────────────────────────────────────
-if getattr(sys, 'frozen', False):
+if getattr(sys, "frozen", False):
     BASE_DIR   = Path(sys.executable).parent
     ASSETS_DIR = BASE_DIR / "assets"
 else:
@@ -34,13 +34,99 @@ else:
 BUNDLED_JSX_DIR = ASSETS_DIR / "scripts" / "JSX"
 sys.path.insert(0, str(ASSETS_DIR))
 
-from scripts.config import Config
-from scripts.audio_processing import download_audio, trim_audio, detect_beats
-from scripts.image_processing import download_image, extract_colors
-from scripts.lyric_processing import transcribe_audio
-from scripts.song_database import SongDatabase
-from scripts.genius_processing import fetch_genius_image
-from scripts.smart_picker import SmartSongPicker
+# ── Safe startup: friendly GUI errors instead of raw tracebacks ───────────────
+def _show_startup_error(title, message, fix=None):
+    app = QApplication.instance() or QApplication(sys.argv)
+    dlg = QMessageBox()
+    dlg.setWindowTitle(f"Apollova \u2014 {title}")
+    dlg.setIcon(QMessageBox.Icon.Critical)
+    dlg.setText(f"<b>{title}</b>")
+    full_msg = message
+    if fix:
+        full_msg += f"\n\n<b>How to fix:</b>\n{fix}"
+    dlg.setInformativeText(full_msg)
+    dlg.setStandardButtons(QMessageBox.StandardButton.Ok)
+    dlg.setStyleSheet(
+        "QWidget{background:#1e1e2e;color:#cdd6f4;font-family:'Segoe UI';font-size:13px;}"
+        "QPushButton{background:#313244;border:1px solid #45475a;border-radius:5px;"
+        "padding:6px 16px;color:#cdd6f4;}"
+        "QPushButton:hover{background:#89b4fa;color:#1e1e2e;}"
+    )
+    dlg.exec()
+    sys.exit(1)
+
+def _import_scripts():
+    global Config, download_audio, trim_audio, detect_beats
+    global download_image, extract_colors, transcribe_audio
+    global transcribe_audio_mono, transcribe_audio_onyx
+    global SongDatabase, fetch_genius_image, SmartSongPicker
+
+    # Check files exist
+    missing = [s for s in ["config","audio_processing","image_processing",
+                            "lyric_processing","lyric_processing_mono",
+                            "lyric_processing_onyx","lyric_alignment",
+                            "song_database","genius_processing","smart_picker"]
+               if not (ASSETS_DIR / "scripts" / f"{s}.py").exists()]
+    if missing:
+        _show_startup_error(
+            "Missing Files",
+            "The following required files are missing:\n\n" +
+            "\n".join(f"  \u2022 scripts/{m}.py" for m in missing),
+            "Please reinstall Apollova \u2014 some files appear to have been deleted."
+        )
+
+    try:
+        from scripts.config import Config as _C
+        from scripts.audio_processing import download_audio as _da, trim_audio as _ta, detect_beats as _db
+        from scripts.image_processing import download_image as _di, extract_colors as _ec
+        from scripts.lyric_processing import transcribe_audio as _tr
+        from scripts.lyric_processing_mono import transcribe_audio as _trm
+        from scripts.lyric_processing_onyx import transcribe_audio as _tro
+        from scripts.song_database import SongDatabase as _SD
+        from scripts.genius_processing import fetch_genius_image as _fg
+        from scripts.smart_picker import SmartSongPicker as _SP
+        Config=_C; download_audio=_da; trim_audio=_ta; detect_beats=_db
+        download_image=_di; extract_colors=_ec; transcribe_audio=_tr
+        transcribe_audio_mono=_trm; transcribe_audio_onyx=_tro
+        SongDatabase=_SD; fetch_genius_image=_fg; SmartSongPicker=_SP
+
+    except OSError as e:
+        err = str(e)
+        if "1114" in err or "DLL" in err or "c10.dll" in err:
+            _show_startup_error(
+                "PyTorch DLL Error",
+                "PyTorch failed to load due to a conflicting installation.\n\n"
+                "This happens when two versions of PyTorch are installed at the same time "
+                "(one in AppData and one in Program Files).",
+                "Open PowerShell and run:\n\n"
+                "  pip uninstall torch torchaudio -y\n\n"
+                "Then re-run Setup.exe to reinstall cleanly.\n\n"
+                "If this keeps happening, install the Visual C++ Redistributable:\n"
+                "https://aka.ms/vs/17/release/vc_redist.x64.exe"
+            )
+        _show_startup_error("Load Error", f"Failed to load application:\n{e}",
+                            "Re-run Setup.exe to repair your installation.")
+
+    except ImportError as e:
+        pkg = str(e).replace("No module named ","").strip("'")
+        _show_startup_error(
+            "Missing Package",
+            f"A required Python package is not installed:\n\n  {pkg}",
+            f"Re-run Setup.exe to install all required packages.\n\n"
+            f"Or manually run:  pip install {pkg}"
+        )
+    except Exception as e:
+        _show_startup_error(
+            "Startup Error",
+            f"Apollova failed to start:\n\n{type(e).__name__}: {e}",
+            "Re-run Setup.exe to repair your installation."
+        )
+
+Config=download_audio=trim_audio=detect_beats=None
+download_image=extract_colors=transcribe_audio=None
+transcribe_audio_mono=transcribe_audio_onyx=None
+SongDatabase=fetch_genius_image=SmartSongPicker=None
+_import_scripts()
 
 # ── Directory constants ───────────────────────────────────────────────────────
 INSTALL_DIR     = BASE_DIR
@@ -1218,6 +1304,7 @@ class AppolovaApp(QMainWindow):
             t     = self._job_template()
             outd  = JOBS_DIRS.get(t)
             Config.WHISPER_MODEL = self.whisper_combo.currentText()
+            Config.GENIUS_API_TOKEN = self.settings.get('genius_api_token', '')
 
             if self.use_smart_picker:
                 self.signals.log.emit(f"🤖 Smart Picker: {num} songs | {t.upper()}")
@@ -1268,11 +1355,16 @@ class AppolovaApp(QMainWindow):
                                 shutil.copy(src, dst / fn)
                         if img.exists():
                             shutil.copy(img, dst / "cover.png")
+                        data_file = {
+                            'aurora': dst / "lyrics.txt",
+                            'mono':   dst / "mono_data.json",
+                            'onyx':   dst / "onyx_data.json",
+                        }.get(t, dst / "lyrics.txt")
                         jd = job_data.copy()
                         jd.update({'job_id': i,
                                    'audio_trimmed': str(dst / "audio_trimmed.wav"),
                                    'cover_image': str(dst/"cover.png") if img.exists() else None,
-                                   'lyrics_file': str(dst / "lyrics.txt")})
+                                   'lyrics_file': str(data_file)})
                         with open(dst / "job_data.json", 'w') as f:
                             json.dump(jd, f, indent=4)
                 self.signals.progress.emit(100)
@@ -1354,39 +1446,76 @@ class AppolovaApp(QMainWindow):
         else:
             self.signals.log.emit("  ✓ Trimmed audio exists")
 
-        # Beats
-        chk()
-        beats_path = job_folder / "beats.json"
-        if cached and cached.get('beats'):
-            beats = cached['beats']
-            with open(beats_path, 'w') as f:
-                json.dump(beats, f, indent=4)
-            self.signals.log.emit("  ✓ Cached beats")
-        elif not beats_path.exists():
-            self.signals.log.emit("  Detecting beats…")
-            beats = detect_beats(str(job_folder))
-            with open(beats_path, 'w') as f:
-                json.dump(beats, f, indent=4)
-            self.signals.log.emit(f"  ✓ {len(beats)} beats")
-        else:
-            with open(beats_path) as f:
-                beats = json.load(f)
-            self.signals.log.emit("  ✓ Beats exist")
+        # Beats (Aurora only)
+        beats = []
+        if template == 'aurora':
+            chk()
+            beats_path = job_folder / "beats.json"
+            if cached and cached.get('beats'):
+                beats = cached['beats']
+                with open(beats_path, 'w') as f:
+                    json.dump(beats, f, indent=4)
+                self.signals.log.emit("  ✓ Cached beats")
+            elif not beats_path.exists():
+                self.signals.log.emit("  Detecting beats…")
+                beats = detect_beats(str(job_folder))
+                with open(beats_path, 'w') as f:
+                    json.dump(beats, f, indent=4)
+                self.signals.log.emit(f"  ✓ {len(beats)} beats")
+            else:
+                with open(beats_path) as f:
+                    beats = json.load(f)
+                self.signals.log.emit("  ✓ Beats exist")
 
-        # Transcribe
+        # Transcribe (per-template)
         chk()
         lyrics_path = job_folder / "lyrics.txt"
-        if cached and cached.get('transcribed_lyrics'):
-            with open(lyrics_path, 'w', encoding='utf-8') as f:
-                json.dump(cached['transcribed_lyrics'], f, indent=4, ensure_ascii=False)
-            self.signals.log.emit(
-                f"  ✓ Cached lyrics ({len(cached['transcribed_lyrics'])} segs)")
-        elif not lyrics_path.exists():
-            self.signals.log.emit(f"  Transcribing ({Config.WHISPER_MODEL})…")
-            transcribe_audio(str(job_folder), song_title)
-            self.signals.log.emit("  ✓ Transcribed")
+        if template == 'aurora':
+            if cached and cached.get('transcribed_lyrics'):
+                with open(lyrics_path, 'w', encoding='utf-8') as f:
+                    json.dump(cached['transcribed_lyrics'], f, indent=4, ensure_ascii=False)
+                self.signals.log.emit(
+                    f"  ✓ Cached lyrics ({len(cached['transcribed_lyrics'])} segs)")
+            elif not lyrics_path.exists():
+                self.signals.log.emit(f"  Transcribing ({Config.WHISPER_MODEL})…")
+                transcribe_audio(str(job_folder), song_title)
+                self.signals.log.emit("  ✓ Transcribed")
+            else:
+                self.signals.log.emit("  ✓ Lyrics exist")
+            lyrics_data = lyrics_path.read_text() if lyrics_path.exists() else ""
+
+        elif template == 'mono':
+            mono_path = job_folder / "mono_data.json"
+            cached_mono = self.song_db.get_mono_lyrics(song_title)
+            if cached_mono:
+                with open(mono_path, 'w', encoding='utf-8') as f:
+                    json.dump(cached_mono, f, indent=4, ensure_ascii=False)
+                self.signals.log.emit("  ✓ Cached mono lyrics")
+            elif not mono_path.exists():
+                self.signals.log.emit(f"  Transcribing mono ({Config.WHISPER_MODEL})…")
+                transcribe_audio_mono(str(job_folder), song_title)
+                self.signals.log.emit("  ✓ Transcribed (mono)")
+            else:
+                self.signals.log.emit("  ✓ Mono data exists")
+            lyrics_data = mono_path.read_text() if mono_path.exists() else "{}"
+
+        elif template == 'onyx':
+            onyx_path = job_folder / "onyx_data.json"
+            cached_onyx = self.song_db.get_onyx_lyrics(song_title)
+            if cached_onyx:
+                with open(onyx_path, 'w', encoding='utf-8') as f:
+                    json.dump(cached_onyx, f, indent=4, ensure_ascii=False)
+                self.signals.log.emit("  ✓ Cached onyx lyrics")
+            elif not onyx_path.exists():
+                self.signals.log.emit(f"  Transcribing onyx ({Config.WHISPER_MODEL})…")
+                transcribe_audio_onyx(str(job_folder), song_title)
+                self.signals.log.emit("  ✓ Transcribed (onyx)")
+            else:
+                self.signals.log.emit("  ✓ Onyx data exists")
+            lyrics_data = onyx_path.read_text() if onyx_path.exists() else "{}"
+
         else:
-            self.signals.log.emit("  ✓ Lyrics exist")
+            lyrics_data = ""
 
         # Image / colors
         image_path = job_folder / "cover.png"
@@ -1414,8 +1543,11 @@ class AppolovaApp(QMainWindow):
                     colors = extract_colors(str(job_folder))
                     self.signals.log.emit(f"  ✓ Colors: {', '.join(colors)}")
 
-        with open(lyrics_path, 'r', encoding='utf-8') as f:
-            lyrics_data = json.load(f)
+        data_file = {
+            'aurora': job_folder / "lyrics.txt",
+            'mono':   job_folder / "mono_data.json",
+            'onyx':   job_folder / "onyx_data.json",
+        }.get(template, job_folder / "lyrics.txt")
 
         job_data = {
             "job_id": job_number, "song_title": song_title,
@@ -1423,66 +1555,31 @@ class AppolovaApp(QMainWindow):
             "end_time": end_time, "template": template,
             "audio_trimmed": str(job_folder / "audio_trimmed.wav"),
             "cover_image": str(image_path) if image_path.exists() else None,
-            "colors": colors, "lyrics_file": str(lyrics_path),
+            "colors": colors, "lyrics_file": str(data_file),
             "beats": beats, "created_at": datetime.now().isoformat(),
         }
         with open(job_folder / "job_data.json", 'w') as f:
             json.dump(job_data, f, indent=4)
-
-        if template in ['mono', 'onyx']:
-            markers = self._build_markers_from_lyrics(lyrics_data)
-            td = {"markers": markers, "total_markers": len(markers)}
-            if template == 'onyx':
-                td["colors"]      = colors
-                td["cover_image"] = "cover.png" if image_path.exists() else None
-            fn = f"{template}_data.json"
-            with open(job_folder / fn, 'w', encoding='utf-8') as f:
-                json.dump(td, f, indent=4, ensure_ascii=False)
-            self.signals.log.emit(f"  ✓ {fn} ({len(markers)} markers)")
 
         if not cached and not self.use_smart_picker:
             self.signals.log.emit("  Saving to database…")
             self.song_db.add_song(
                 song_title=song_title, youtube_url=youtube_url,
                 start_time=start_time, end_time=end_time,
-                genius_image_url=None, transcribed_lyrics=lyrics_data,
-                colors=colors, beats=beats)
+                genius_image_url=None, colors=colors, beats=beats)
         elif cached and not self.use_smart_picker:
             self.song_db.mark_song_used(song_title)
+        if not self.use_smart_picker:
+            if template == 'aurora':
+                self.song_db.update_lyrics(song_title, lyrics_data)
+            elif template == 'mono':
+                self.song_db.update_mono_lyrics(song_title, lyrics_data)
+            elif template == 'onyx':
+                self.song_db.update_onyx_lyrics(song_title, lyrics_data)
 
         self.signals.log.emit(f"  ✓ Job {job_number} complete")
         return (job_data, job_folder) if return_data else None
 
-    def _build_markers_from_lyrics(self, lyrics_data):
-        markers = []
-        for i, seg in enumerate(lyrics_data):
-            text = seg.get('lyric_current', '') or seg.get('text', '')
-            if not text or not text.strip():
-                continue
-            clean = ' '.join(text.replace('\\r',' ').replace('\r',' ').split()).strip()
-            t0    = float(seg.get('t', 0) or seg.get('time', 0))
-            tend  = float(seg.get('end', t0 + 3))
-            raw   = seg.get('words', [])
-            if raw:
-                words = [{"word": w.get('word','').strip(),
-                          "start": float(w.get('start', t0)),
-                          "end":   float(w.get('end',   t0))}
-                         for w in raw if w.get('word','').strip()]
-            else:
-                wl  = clean.split()
-                dur = max(tend - t0, 0.25)
-                pw  = dur / max(len(wl), 1)
-                words = [{"word": w, "start": t0+i*pw, "end": t0+(i+1)*pw}
-                         for i, w in enumerate(wl)]
-            if i < len(lyrics_data) - 1:
-                nt   = float(lyrics_data[i+1].get('t',0) or lyrics_data[i+1].get('time',0))
-                endt = nt if nt > t0 else tend
-            else:
-                endt = tend
-            markers.append({"time": t0, "text": clean, "words": words,
-                             "color": "white" if len(markers)%2==0 else "black",
-                             "end_time": endt})
-        return markers
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

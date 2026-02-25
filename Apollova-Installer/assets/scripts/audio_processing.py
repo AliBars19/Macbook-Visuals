@@ -1,10 +1,16 @@
-"""Audio processing with pytubefix and OAuth login"""
+"""
+Audio Processing - Download, trim, and beat detection
+Shared across Aurora, Mono, and Onyx templates
+
+- download_audio: YouTube download via pytubefix with OAuth
+- trim_audio: Clip extraction based on MM:SS timestamps
+- detect_beats: Beat detection via librosa (Aurora only)
+"""
 import os
 import time
+import subprocess
 from pytubefix import YouTube
 from pydub import AudioSegment
-import librosa
-import subprocess
 
 
 def download_audio(url, job_folder, max_retries=3, use_oauth=True):
@@ -60,23 +66,24 @@ def download_audio(url, job_folder, max_retries=3, use_oauth=True):
             
             if "bot" in error_msg:
                 if attempt == 0 and not use_oauth:
-                    print(f"⚠️ Bot detected, retrying with login...")
+                    print(f"⚠️  Bot detected, retrying with login...")
                     return download_audio(url, job_folder, max_retries=max_retries-1, use_oauth=True)
                 else:
-                    print(f"⚠️ Bot detection, waiting 30s...")
+                    print(f"⚠️  Bot detection even with login, waiting 30s...")
                     time.sleep(30)
             elif "400" in error_msg:
-                print(f"⚠️ HTTP 400 error, waiting 5s...")
+                print(f"⚠️  HTTP 400 error, waiting 5s...")
                 time.sleep(5)
             elif "429" in error_msg:
-                print(f"⚠️ Rate limited, waiting 15s...")
+                print(f"⚠️  Rate limited, waiting 15s...")
                 time.sleep(15)
             
             if attempt < max_retries - 1:
-                print(f"  Retry {attempt + 1}/{max_retries}...")
+                print(f"  Download failed (attempt {attempt + 1}/{max_retries}), retrying...")
                 time.sleep(2)
+                continue
             else:
-                print(f"❌ Download failed: {e}")
+                print(f"❌ Download failed after {max_retries} attempts: {e}")
                 raise
     
     return None
@@ -84,60 +91,81 @@ def download_audio(url, job_folder, max_retries=3, use_oauth=True):
 
 def mmss_to_milliseconds(time_str):
     """Convert MM:SS to milliseconds"""
-    parts = time_str.split(':')
-    if len(parts) != 2:
-        raise ValueError("Time must be in MM:SS format")
-    minutes, seconds = map(int, parts)
-    return (minutes * 60 + seconds) * 1000
+    try:
+        parts = time_str.split(':')
+        if len(parts) != 2:
+            raise ValueError("Time must be in MM:SS format")
+        
+        minutes, seconds = map(int, parts)
+        return (minutes * 60 + seconds) * 1000
+    except Exception as e:
+        print(f"❌ Invalid time format '{time_str}': {e}")
+        raise
 
 
 def trim_audio(job_folder, start_time, end_time):
-    """Trim audio file to specified timestamps"""
+    """Trim audio file to specified timestamps (MM:SS format)"""
     audio_path = os.path.join(job_folder, 'audio_source.mp3')
     
     if not os.path.exists(audio_path):
-        print(f"❌ Audio source not found")
+        print(f"❌ Audio source not found: {audio_path}")
         return None
     
-    song = AudioSegment.from_file(audio_path, format="mp3")
-    
-    start_ms = mmss_to_milliseconds(start_time)
-    end_ms = mmss_to_milliseconds(end_time)
-    
-    if start_ms >= end_ms:
-        print("❌ Start time must be before end time")
-        return None
-    
-    clip = song[start_ms:end_ms]
-    
-    export_path = os.path.join(job_folder, "audio_trimmed.wav")
-    clip.export(export_path, format="wav")
-    
-    duration = (end_ms - start_ms) / 1000
-    print(f"✓ Trimmed: {duration:.1f}s")
-    
-    return export_path
+    try:
+        song = AudioSegment.from_file(audio_path, format="mp3")
+        
+        start_ms = mmss_to_milliseconds(start_time)
+        end_ms = mmss_to_milliseconds(end_time)
+        
+        if start_ms >= end_ms:
+            print("❌ Start time must be before end time")
+            return None
+        
+        clip = song[start_ms:end_ms]
+        
+        export_path = os.path.join(job_folder, "audio_trimmed.wav")
+        clip.export(export_path, format="wav")
+        
+        duration = (end_ms - start_ms) / 1000
+        print(f"✓ Trimmed audio: {duration:.1f}s clip created")
+        
+        return export_path
+        
+    except Exception as e:
+        print(f"❌ Audio trimming failed: {e}")
+        raise
 
 
 def detect_beats(job_folder):
-    """Detect beats in trimmed audio"""
+    """
+    Detect beats in trimmed audio using librosa.
+    Used by Aurora for beat-synced effects. Mono/Onyx don't need this.
+    """
+    import librosa
+    
     audio_path = os.path.join(job_folder, "audio_trimmed.wav")
     
     if not os.path.exists(audio_path):
-        print(f"❌ Trimmed audio not found")
+        print(f"❌ Trimmed audio not found: {audio_path}")
         return []
     
-    y, sr = librosa.load(audio_path, sr=None)
-    tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
-    beat_times = librosa.frames_to_time(beat_frames, sr=sr)
-    
-    beats_list = [float(t) for t in beat_times]
-    
-    if hasattr(tempo, '__len__'):
-        tempo_val = float(tempo[0]) if len(tempo) > 0 else 120.0
-    else:
-        tempo_val = float(tempo)
-    
-    print(f"✓ {len(beats_list)} beats ({tempo_val:.0f} BPM)")
-    
-    return beats_list
+    try:
+        y, sr = librosa.load(audio_path, sr=None)
+        
+        tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr)
+        beat_times = librosa.frames_to_time(beat_frames, sr=sr)
+        
+        beats_list = [float(t) for t in beat_times]
+        
+        if hasattr(tempo, '__len__'):
+            tempo_val = float(tempo[0]) if len(tempo) > 0 else 120.0
+        else:
+            tempo_val = float(tempo)
+        
+        print(f"✓ Detected {len(beats_list)} beats (tempo ≈ {tempo_val:.1f} BPM)")
+        
+        return beats_list
+        
+    except Exception as e:
+        print(f"⚠️  Beat detection failed: {e}")
+        return []

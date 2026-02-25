@@ -1,3 +1,3 @@
 Set WshShell = CreateObject("WScript.Shell")
 WshShell.CurrentDirectory = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName)
-WshShell.Run """C:\Users\aliba\AppData\Local\Programs\Python\Python314\python.exe"" render_watcher.py", 0, True
+WshShell.Run """C:\Program Files\Python311\python.exe"" render_watcher.py", 0, 
