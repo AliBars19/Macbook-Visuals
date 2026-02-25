@@ -86,6 +86,8 @@ REQUIRED_PACKAGES = [
 
 REQUIRED_FILES = [
     "assets/apollova_gui.py",
+    "assets/apollova_license.py",
+    "assets/apollova_activation_dialog.py",
     "assets/scripts/config.py",
     "assets/scripts/audio_processing.py",
     "assets/scripts/image_processing.py",
@@ -646,6 +648,25 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Apollova")
     app.setStyleSheet(STYLE)
+
+    # ── License check ──────────────────────────────────────────────────────────
+    try:
+        from apollova_license import check_license
+        from apollova_activation_dialog import ActivationDialog
+        valid, reason = check_license()
+        if not valid:
+            dlg = ActivationDialog(reason)
+            dlg.exec()
+            if not dlg.was_activated():
+                sys.exit(0)
+    except ImportError as e:
+        _show_fatal(
+            "Missing License Module",
+            f"A required file could not be loaded:\n{e}",
+            "Please reinstall Apollova by running Setup.exe."
+        )
+    # ──────────────────────────────────────────────────────────────────────────
+
     screen = LoadingScreen(root, python, settings)
     screen.show()
     sys.exit(app.exec())
